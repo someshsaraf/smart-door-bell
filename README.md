@@ -161,15 +161,22 @@ Full details: **[Indoor/README.md](Indoor/README.md)**.
 
 ### 2 · Outdoor unit (Tuya T5)
 
-The firmware is a [TuyaOpen](https://github.com/tuya/TuyaOpen) application. Put the `Outdoor` folder inside your
-TuyaOpen checkout (for example `TuyaOpen/apps/doorbell_outdoor`), then:
+The firmware is a [TuyaOpen](https://github.com/tuya/TuyaOpen) application and builds inside the SDK.
+Board: Tuya T5-E1 1.75″ AMOLED, using the SDK's `WAVESHARE_T5AI_TOUCH_AMOLED_1_75` definition — all board,
+LVGL 9, touch and font settings are already in `Outdoor/app_default.config`.
 
-```bash
-. ./export.sh                 # in the TuyaOpen root (export.ps1 on Windows)
-cd apps/doorbell_outdoor
-tos.py build
-tos.py flash -p COM6          # your serial port
+```powershell
+git clone https://github.com/tuya/TuyaOpen.git; cd TuyaOpen
+. .\export.ps1                                   # every new terminal (export.sh on Linux/macOS)
+cd examples\graphics
+git clone https://github.com/someshsaraf/smart-door-bell.git doorbell
+cd doorbell\Outdoor
+tos.py build                                     # → dist\Outdoor_1.0.1\Outdoor_QIO_1.0.1.bin
+tos.py flash -p COM6                             # your serial port
 ```
+
+Configuration explained, how to check and change it, logs and troubleshooting:
+**[Outdoor/README.md](Outdoor/README.md)**.
 
 ### 3 · Connect them
 
@@ -202,6 +209,7 @@ Payloads and rules: **[Indoor/topics.md](Indoor/topics.md)**.
 ```
 doorbell/
 ├── Outdoor/                 TuyaOpen firmware for the T5 round display
+│   ├── README.md              build & flash guide, board configuration
 │   ├── src/doorbell_ui.c      LVGL screens, bell rendering, touch, settings
 │   ├── src/doorbell_net.c     Wi-Fi, NTP clock, MQTT client, remote settings
 │   └── app_default.config     board: WAVESHARE_T5AI_TOUCH_AMOLED_1_75
