@@ -59,7 +59,7 @@ typedef struct {
     bool time_synced; /* system UTC time set from NTP; read it with tal_time_get_posix() */
     /* UI settings sent by the indoor unit: bumps remote_seq, -1 = not in that message */
     uint32_t remote_seq;
-    int32_t remote_theme, remote_bell, remote_ring;
+    int32_t remote_theme, remote_bell, remote_ring, remote_style;
 } net_status_t;
 
 /* Call once after tal_kv_init(); connects with the saved Wi-Fi if any. */
@@ -84,4 +84,4 @@ void net_publish_stop(void);
 
 /* Current UI settings, published (retained) for the indoor unit's settings page.
  * Call at start-up and after every change. */
-void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds);
+void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds, uint32_t bell_style);

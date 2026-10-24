@@ -26,7 +26,7 @@ that rings, shows the camera, and lets you answer from inside.**
 | **Hardware** | Tuya T5 (T5AI) board with a 1.75″ 466×466 round AMOLED touch display | Raspberry Pi 5 + 10″ HDMI display + Bluetooth speaker |
 | **When a visitor taps** | The bell swings, sound waves pulse, the ring is sent to the indoor unit | Chime plays on the speaker, the door camera appears with a big **STOP** |
 | **Day to day** | Bell, clock and date on a crisp round screen | Big clock over rotating **news** or a **photo** slideshow |
-| **Setup** | Wi-Fi, theme, bell colour, ring time — on the round screen | The same outdoor settings, plus speaker, tone and news — from the wall |
+| **Setup** | Wi-Fi, theme, bell picture and colour, ring time — on the round screen | The same outdoor settings, plus speaker, tone and news — from the wall |
 
 ---
 
@@ -63,14 +63,20 @@ the Pi reads the camera directly over RTSP. No cloud account is needed.
 <div align="center">
 <img src="docs/images/outdoor_screens.png" alt="Three round doorbell screens: blue bell on a light theme, the blue bell swinging with sound waves, and a gold bell on a dark theme" width="860">
 
-<sub><b>Home</b> (Clean &amp; Light) · <b>Ringing</b> · <b>Home</b> (Midnight &amp; Gold)<br/>
+<sub><b>Classic bell</b> · <b>Push button</b> (pulsing halo invites a tap) · <b>Ringing</b> (Midnight &amp; Gold)<br/>
 Rendered from the firmware's own layout, colours and bell shading — not a photo of the device.</sub>
+<br/><br/>
+<img src="docs/images/outdoor_bell_page.png" alt="Round Bell settings page with six bell thumbnails: Classic, Push button, Temple (selected), Hand bell, Twin bells, Flat" width="300">
+
+<sub>The <b>Bell</b> settings page: six styles, each previewed in your bell colour.</sub>
 </div>
 
 **Board:** Tuya T5-E1 / **Waveshare T5AI 1.75″ Touch AMOLED** development board — 466×466 round AMOLED,
 capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_AMOLED_1_75`).
 
-- 🔔 **Tap to ring** — a 3D-shaded bell (drawn on the device at full resolution, no blurry bitmaps) swings with pulsing sound waves
+- 🔔 **Tap to ring** — the bell swings with pulsing sound waves; drawn on the device at full resolution, no blurry bitmaps
+- 🛎️ **Six bell styles** — *Classic*, *Push button* (a pulsing halo shows visitors where to press), *Temple* bell, *Hand bell*,
+  *Twin bells* and *Flat*, picked on the doorbell's **Bell** page from thumbnails drawn in your bell colour
 - ✋ **Hold 5 s for settings** — a ring traces the screen edge while you hold
 - 📶 **Wi-Fi setup on the screen** — scan, pick a network, type the password on a keyboard sized for the round display; saved and reconnected after every reboot; a wrong password never loses the network that worked
 - 🕒 **Network clock** — time and date from NTP (IST), never a made-up time
@@ -99,7 +105,7 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
 - 🚪 **Visitor alert** — live VIGI camera feed (RTSP), countdown and a big **STOP** that also returns the doorbell to its main screen
-- 🔊 **Chimes on a Bluetooth speaker** — loops for the whole ring until the timer ends or STOP is pressed
+- 🔊 **14 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
 - 📋 **Recent events** — the last rings at a glance
 - 🚀 **Starts at boot** — restarts itself if it ever crashes
 
@@ -108,11 +114,11 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 <table>
 <tr>
 <td width="50%"><img src="docs/images/settings_speaker.png" alt="Speaker settings: sound output, volume slider, search, test sound and a list showing a connected Philips BT100"></td>
-<td width="50%"><img src="docs/images/settings_tone.png" alt="Bell tone settings: five chimes with preview buttons, Westminster selected"></td>
+<td width="50%"><img src="docs/images/settings_tone.png" alt="Bell tone settings: tones grouped as Chimes, Bollywood style and Funny, each with a preview button"></td>
 </tr>
 <tr>
 <td align="center"><b>Speaker</b> — pair, connect, volume, test</td>
-<td align="center"><b>Bell tone</b> — five chimes with preview</td>
+<td align="center"><b>Bell tone</b> — chimes, Bollywood style, funny, your own</td>
 </tr>
 <tr>
 <td><img src="docs/images/settings_news.png" alt="News settings: region and genre toggle buttons"></td>

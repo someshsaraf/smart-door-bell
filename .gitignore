@@ -8,6 +8,8 @@ Indoor/settings.json
 Indoor/news_cache.json
 Indoor/app.log
 Indoor/app.log.old
+# your own ring tones (e.g. film songs you own) stay on your Pi
+Indoor/assets/tones/mine/
 __pycache__/
 *.pyc
 

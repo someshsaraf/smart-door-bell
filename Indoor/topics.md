@@ -7,7 +7,7 @@
 | Pi → Outdoor | `home/doorbell/stop` | `{"command":"stop","source":"indoor","event_id":"..."}` | STOP pressed on the Pi: outdoor unit returns to its main screen |
 | Outdoor → Pi | `home/doorbell/stop` | `{"command":"stop","source":"outdoor"}` | Ring cancelled outdoors (settings opened mid-ring) |
 | Pi → broker | `home/doorbell/indoor/status` | JSON | Ringing/idle status |
-| Outdoor → Pi | `home/doorbell/outdoor/state` (retained) | `{"theme":1,"bell_color":1,"ring_seconds":30,"wifi_ssid":"HomeNet","ip":"192.168.2.68","broker":"192.168.2.134","time_synced":true,"firmware":"1.0.1"}` | Current outdoor settings, shown on the Pi's settings page. Republished after every change |
+| Outdoor → Pi | `home/doorbell/outdoor/state` (retained) | `{"theme":1,"bell_color":1,"ring_seconds":30,"bell_style":0,"wifi_ssid":"HomeNet","ip":"192.168.2.68","broker":"192.168.2.134","time_synced":true,"firmware":"1.0.1"}` | Current outdoor settings, shown on the Pi's settings page. Republished after every change |
 | Outdoor → Pi | `home/doorbell/outdoor/online` (retained) | `online` / `offline` | `offline` is the outdoor unit's MQTT last will, published by the broker if it drops off |
 | Pi → Outdoor | `home/doorbell/outdoor/config` | see below | Change outdoor settings |
 | Outdoor → Pi | `home/doorbell/outdoor/wifi_scan` | `{"networks":[{"ssid":"HomeNet","rssi":-48,"secure":true}]}` | Answer to a `wifi_scan` command |
@@ -20,6 +20,7 @@ Any subset of these fields in one `home/doorbell/outdoor/config` message:
 |---|---|---|
 | `theme` | `0` Clean & Light, `1` Midnight & Gold | Same as choosing it under Appearance (also selects that theme's bell colour unless `bell_color` is given) |
 | `bell_color` | `0` Blue, `1` Gold, `2` Silver, `3` Red | Bell colour |
+| `bell_style` | `0` Classic, `1` Push button, `2` Temple, `3` Hand bell, `4` Twin bells, `5` Flat | Home-screen bell picture (Push button adds a pulsing halo) |
 | `ring_seconds` | `10`, `15`, `30`, `45`, `60` | Ring duration sent with each start |
 | `wifi` | `{"ssid":"...","password":"..."}` | Joins that network; saved only if it connects, otherwise it returns to the saved one |
 | `broker` | `"192.168.2.134"` | New MQTT broker address (saved). A wrong value cuts the link; fix it on the doorbell |

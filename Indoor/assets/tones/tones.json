@@ -1,0 +1,58 @@
+{
+  "ding_dong.wav": {
+    "name": "Ding Dong",
+    "category": "Chimes"
+  },
+  "westminster.wav": {
+    "name": "Westminster",
+    "category": "Chimes"
+  },
+  "triple_chime.wav": {
+    "name": "Triple Chime",
+    "category": "Chimes"
+  },
+  "soft_marimba.wav": {
+    "name": "Soft Marimba",
+    "category": "Chimes"
+  },
+  "church_bell.wav": {
+    "name": "Church Bell",
+    "category": "Chimes"
+  },
+  "shehnai_swagat.wav": {
+    "name": "Shehnai Swagat",
+    "category": "Bollywood style"
+  },
+  "sitar_dhun.wav": {
+    "name": "Sitar Dhun",
+    "category": "Bollywood style"
+  },
+  "dhol_dhamaka.wav": {
+    "name": "Dhol Dhamaka",
+    "category": "Bollywood style"
+  },
+  "santoor_subah.wav": {
+    "name": "Santoor Subah",
+    "category": "Bollywood style"
+  },
+  "boing_boing.wav": {
+    "name": "Boing Boing",
+    "category": "Funny"
+  },
+  "slide_whistle.wav": {
+    "name": "Slide Whistle",
+    "category": "Funny"
+  },
+  "rubber_duck.wav": {
+    "name": "Rubber Duck",
+    "category": "Funny"
+  },
+  "kazoo_tada.wav": {
+    "name": "Kazoo Ta-Da",
+    "category": "Funny"
+  },
+  "cuckoo_clock.wav": {
+    "name": "Cuckoo Clock",
+    "category": "Funny"
+  }
+}

@@ -42,7 +42,7 @@
 #define KV_UI       "db_ui"
 
 /* Settings pages are consecutive so prev/next is just -1/+1. */
-typedef enum { HOME, WIFI, APPEARANCE, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
+typedef enum { HOME, WIFI, APPEARANCE, BELL, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
 #define FIRST_SETTING WIFI
 #define LAST_SETTING  CONTROLLER
 
@@ -84,6 +84,11 @@ static const uint32_t durations[] = {10, 15, 30, 45, 60};
 static uint32_t theme_idx;
 static uint32_t bell_idx;
 static uint32_t ring_seconds = 30;
+/* Bell on the home screen (chosen on the Bell settings page). The numbers are
+ * stored and sent to the indoor unit, so only ever append new styles. */
+enum { STYLE_CLASSIC, STYLE_BUTTON, STYLE_TEMPLE, STYLE_HAND, STYLE_TWIN, STYLE_FLAT, STYLE_COUNT };
+static const char *const style_names[STYLE_COUNT] = {"Classic", "Push button", "Temple", "Hand bell", "Twin bells", "Flat"};
+static uint32_t bell_style = STYLE_CLASSIC;
 
 static page_t page = HOME;
 static lv_obj_t *pages[PAGE_COUNT];
@@ -94,9 +99,11 @@ static net_status_t ns; /* latest network status, refreshed by net_poll_cb */
 
 /* Shared styles: switching theme only rewrites these and refreshes. */
 static lv_style_t st_screen, st_text, st_muted, st_accent_text, st_card, st_card_pressed, st_card_checked;
-static lv_style_t st_accent, st_accent_pressed, st_wave, st_progress, st_dot, st_swatch_checked;
+static lv_style_t st_accent, st_accent_pressed, st_wave, st_halo, st_progress, st_dot, st_swatch_checked;
 
-static lv_obj_t *bell_img;
+static lv_obj_t *btn_img;  /* the push-button disc */
+static lv_obj_t *bell_img; /* the bell symbol on it (swings) */
+static lv_obj_t *halo;     /* pulsing ring around the button while idle */
 static lv_obj_t *home_clock, *home_date;
 static lv_obj_t *hold_arc;
 static lv_obj_t *wifi_icon;
@@ -104,6 +111,8 @@ static lv_obj_t *wifi_slash;
 static lv_obj_t *ring_waves[4];
 static lv_obj_t *theme_cards[THEME_COUNT];
 static lv_obj_t *swatches[BELL_COLOR_COUNT];
+static lv_obj_t *style_cards[STYLE_COUNT];
+static lv_obj_t *style_thumbs[STYLE_COUNT];
 static lv_obj_t *duration_btns[DURATION_COUNT];
 
 /* Wi-Fi and Indoor Unit pages share one layout. */
@@ -123,10 +132,10 @@ static char entry_ssid[NET_SSID_MAX + 1];
 
 static void save_config(void)
 {
-    uint8_t v[3] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds};
+    uint8_t v[4] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style};
     if (tal_kv_set(KV_UI, v, sizeof(v)) != OPRT_OK)
         PR_ERR("[DOORBELL] saving settings failed");
-    net_report_settings(theme_idx, bell_idx, ring_seconds); /* keeps the indoor settings page in step */
+    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style); /* keeps the indoor settings page in step */
 }
 
 static void load_config(void)
@@ -135,7 +144,9 @@ static void load_config(void)
     size_t len = 0;
     if (tal_kv_get(KV_UI, &v, &len) != OPRT_OK || !v)
         return;
-    if (len == 3 && v[0] < THEME_COUNT && v[1] < BELL_COLOR_COUNT) {
+    if (len >= 3 && v[0] < THEME_COUNT && v[1] < BELL_COLOR_COUNT) { /* 3 bytes before bell styles existed */
+        if (len >= 4 && v[3] < STYLE_COUNT)
+            bell_style = v[3];
         theme_idx = v[0];
         bell_idx = v[1];
         for (uint32_t i = 0; i < DURATION_COUNT; i++)
@@ -146,39 +157,43 @@ static void load_config(void)
 }
 
 /* ---------- bell artwork ----------
- * A shaded bell drawn per pixel into an ARGB8888 buffer: knob ring, dome,
- * flared body, rim and clapper, each lit as a 3D surface with a soft
- * specular highlight, anti-aliased with 3x3 supersampling. Rendered once at
- * start-up and again only when the bell colour changes.
+ * Every style is drawn per pixel into ARGB8888 buffers with anti-aliased
+ * edges, again whenever the bell colour or style changes:
+ *  - Classic, Temple, Hand bell, Twin bells: 3D bells built from simple
+ *    shapes (domes, flared bodies, rims, knobs, a wooden handle, a ribbon),
+ *    each lit as a surface with a soft specular highlight. Flat: the classic
+ *    outline as a modern flat icon.
+ *  - Push button: a disc in the bell colour, lit from above, with a raised
+ *    rim, a glossy highlight and a drop shadow, so visitors see at once where
+ *    to press; on it a white bell symbol (drawn once) that swings when ringing.
  */
-#define BELL_W     216
-#define BELL_H     236
+#define CLASSIC_W   216
+#define CLASSIC_H   236
+#define CLASSIC_Y   82     /* top of the classic bell on the screen */
+#define CLASSIC_CY  192    /* centre of its dome: the sound waves are centred here */
+#define CLASSIC_SS  3      /* supersampling per axis */
+#define BTN_SIZE    236    /* button image: disc plus room for its shadow */
+#define BTN_R       100.0f /* disc radius */
+#define BTN_CY      200    /* button centre on the screen */
+#define GLYPH_W     128
+#define GLYPH_H     140
+#define GLYPH_SCALE 0.54f  /* bell symbol size relative to the bell geometry below */
+#define GLYPH_PIVOT 14     /* knob centre in symbol pixels: it swings around it */
+#define GLYPH_SS    3      /* supersampling per axis for the symbol */
+
+/* Bell geometry, in units of a 216 x 236 bell. */
 #define BELL_CX    108.0f
-#define BELL_PIVOT 22 /* knob centre: the bell swings around it */
-#define BELL_SS    3  /* supersampling per axis */
+#define BELL_PIVOT 22.0f
 
-static lv_image_dsc_t bell_dsc;
-static uint8_t *bell_buf;
-/* Body half-width and its slope dr/dy for each sample row (y is constant along a row). */
-static float body_w[BELL_H * BELL_SS], body_slope[BELL_H * BELL_SS];
+#define THUMB       64     /* style picker thumbnails */
 
-/*
- * Body below the dome: slight waist, then a flare towards the rim. The slope
- * is zero where it meets the dome, so the shading has no crease there.
- */
-static void init_body_profile(void)
+/* classic_* holds the full-size art of every style except the push button */
+static lv_image_dsc_t classic_dsc, btn_dsc, glyph_dsc, thumb_dsc[STYLE_COUNT];
+static uint8_t *classic_buf, *btn_buf, *glyph_buf, *thumb_buf[STYLE_COUNT];
+
+/* Returns the topmost bell part covering (x, y) and its surface normal, or 0 if none. */
+static int bell_hit(float x, float y, float n[3])
 {
-    for (int r = 0; r < BELL_H * BELL_SS; r++) {
-        float s = ((r + 0.5f) / BELL_SS - 84.0f) / 102.0f;
-        body_w[r] = 62.0f - 24.0f * s * s + 60.0f * s * s * s;
-        body_slope[r] = (-48.0f * s + 180.0f * s * s) / 102.0f;
-    }
-}
-
-/* Returns the topmost part covering sample (x, row) and its surface normal, or 0 if none. */
-static int bell_hit(float x, int row, float n[3])
-{
-    float y = (row + 0.5f) / BELL_SS;
     float dx = x - BELL_CX;
 
     /* rim: horizontal capsule */
@@ -201,13 +216,14 @@ static int bell_hit(float x, int row, float n[3])
             return 2;
         }
     }
-    /* body: surface of revolution, normal = (cos, -dr/dy, sin) */
+    /* body: slight waist, then a flare towards the rim; normal = (cos, -dr/dy, sin) */
     if (y >= 84.0f && y <= 186.0f) {
-        float w = body_w[row];
+        float s = (y - 84.0f) / 102.0f;
+        float w = 62.0f - 24.0f * s * s + 60.0f * s * s * s;
         if (fabsf(dx) <= w) {
             float u = dx / w;
             n[0] = u;
-            n[1] = -body_slope[row];
+            n[1] = -(-48.0f * s + 180.0f * s * s) / 102.0f;
             n[2] = sqrtf(fmaxf(0.0f, 1.0f - u * u));
             return 2;
         }
@@ -236,70 +252,400 @@ static int bell_hit(float x, int row, float n[3])
     return 0;
 }
 
-static void render_bell(uint32_t color)
-{
-    /* Light from the upper left, viewer straight ahead. */
-    const float l[3] = {-0.45f, -0.6f, 0.66f};
-    const float hl = sqrtf(l[0] * l[0] + l[1] * l[1] + (l[2] + 1.0f) * (l[2] + 1.0f));
-    const float h[3] = {l[0] / hl, l[1] / hl, (l[2] + 1.0f) / hl}; /* Blinn half vector */
-    float base[3] = {(float)((color >> 16) & 0xFF), (float)((color >> 8) & 0xFF), (float)(color & 0xFF)};
+/* ---- more bell shapes, same 216 x 236 box ----
+ * Each returns a material (0 = outside) and a surface normal:
+ *   1 bright metal (rims, bands, knobs)  2 metal  3 shadowed metal (clapper)
+ *   4 knob ring  5 wood  6 ribbon  7/8/9 flat body/clapper/rim (unlit)
+ */
+enum { MAT_WOOD = 5, MAT_RIBBON = 6, MAT_FLAT = 7 };
 
-    for (int py = 0; py < BELL_H; py++) {
-        uint8_t *px = bell_buf + py * BELL_W * 4;
-        for (int x = 0; x < BELL_W; x++, px += 4) {
+static int set_n(float n[3], float x, float y, float z, int part)
+{
+    n[0] = x;
+    n[1] = y;
+    n[2] = z;
+    return part;
+}
+
+/* vertical cylinder of half-width w; `slope` tilts the normal for flared bodies */
+static int cyl(float dx, float w, float slope, float n[3], int part)
+{
+    float u = dx / w;
+    return set_n(n, u, -slope, sqrtf(fmaxf(0.0f, 1.0f - u * u)), part);
+}
+
+static bool sphere(float dx, float dy, float r, float n[3])
+{
+    float u = dx / r, v = dy / r, d = u * u + v * v;
+    if (d > 1.0f)
+        return false;
+    set_n(n, u, v, sqrtf(1.0f - d), 0);
+    return true;
+}
+
+/* horizontal capsule: half-width hw, end radius r */
+static bool capsule(float dx, float dy, float hw, float r, float n[3])
+{
+    float ex = fabsf(dx) - (hw - r);
+    if ((ex <= 0.0f && fabsf(dy) <= r) || (ex > 0.0f && ex * ex + dy * dy <= r * r)) {
+        set_n(n, dx / hw, dy / r, 1.0f, 0);
+        return true;
+    }
+    return false;
+}
+
+/* top half of an ellipse (domes, rounded handle tops) */
+static bool dome(float dx, float dy, float a, float b, float n[3])
+{
+    float u = dx / a, v = dy / b;
+    if (dy > 0.0f || u * u + v * v > 1.0f)
+        return false;
+    set_n(n, u, v, sqrtf(fmaxf(0.0f, 1.0f - u * u - v * v)), 0);
+    return true;
+}
+
+/* Temple bell (ghanta): finial, shaft, collar, slim flared body with bands. */
+static int temple_hit(float x, float y, float n[3])
+{
+    float dx = x - BELL_CX;
+    if (sphere(dx, y - 16.0f, 13.0f, n))
+        return 1;
+    if (y >= 26.0f && y <= 74.0f && fabsf(dx) <= 6.0f)
+        return cyl(dx, 6.0f, 0.0f, n, 2);
+    if (capsule(dx, y - 78.0f, 20.0f, 6.0f, n))
+        return 1;
+    if (capsule(dx, y - 198.0f, 98.0f, 8.0f, n))
+        return 1;
+    if (y >= 84.0f && dome(dx, y - 100.0f, 30.0f, 16.0f, n))
+        return 2;
+    if (y >= 100.0f && y <= 192.0f) {
+        float s = (y - 100.0f) / 92.0f, w = 30.0f + 14.0f * s + 52.0f * s * s * s;
+        if (fabsf(dx) <= w) {
+            bool band = fabsf(y - 128.0f) < 2.5f || fabsf(y - 168.0f) < 2.5f;
+            return cyl(dx, w, (14.0f + 156.0f * s * s) / 92.0f, n, band ? 1 : 2);
+        }
+    }
+    if (sphere(dx, y - 214.0f, 11.0f, n))
+        return 3;
+    return 0;
+}
+
+/* Hand bell: wooden handle, metal ferrule, wide domed bell. */
+static int hand_hit(float x, float y, float n[3])
+{
+    float dx = x - BELL_CX;
+    if (y >= 4.0f && dome(dx, y - 26.0f, 13.0f, 22.0f, n))
+        return MAT_WOOD;
+    if (y >= 26.0f && y <= 92.0f) {
+        float t = (y - 26.0f) / 66.0f, w = 11.0f + 3.0f * t * t;
+        if (fabsf(dx) <= w)
+            return cyl(dx, w, 0.0f, n, MAT_WOOD);
+    }
+    if (capsule(dx, y - 97.0f, 20.0f, 7.0f, n))
+        return 1;
+    if (capsule(dx, y - 200.0f, 100.0f, 8.0f, n))
+        return 1;
+    if (y >= 102.0f && dome(dx, y - 150.0f, 64.0f, 48.0f, n))
+        return 2;
+    if (y >= 150.0f && y <= 196.0f) {
+        float s = (y - 150.0f) / 46.0f, w = 64.0f + 32.0f * s * s;
+        if (fabsf(dx) <= w)
+            return cyl(dx, w, 64.0f * s / 46.0f, n, 2);
+    }
+    if (sphere(dx, y - 216.0f, 12.0f, n))
+        return 3;
+    return 0;
+}
+
+/* Twin bells: two small classic bells swinging outwards under a white bow. */
+#define TWIN_SCALE 0.56f
+#define TWIN_SIN   0.258819f /* 15 degrees */
+#define TWIN_COS   0.965926f
+
+static int twin_hit(float x, float y, float n[3])
+{
+    if (sphere(x - BELL_CX, y - 56.0f, 9.0f, n)) /* knot */
+        return MAT_RIBBON;
+    for (int side = -1; side <= 1; side += 2) {
+        float lx = BELL_CX + side * 19.0f, ex = x - lx, ey = y - 50.0f;
+        float u = ex / 18.0f, v = ey / 10.0f;
+        if (u * u + v * v <= 1.0f && ex * ex / 81.0f + ey * ey / 16.0f > 1.0f) /* loop with a hole */
+            return set_n(n, u, v, sqrtf(fmaxf(0.0f, 1.0f - u * u - v * v)), MAT_RIBBON);
+        float tx = BELL_CX + side * (4.0f + (y - 60.0f) * 0.35f);
+        if (y >= 60.0f && y <= 90.0f && fabsf(x - tx) <= 4.0f) /* tails */
+            return set_n(n, (x - tx) / 4.0f, 0.0f, 1.0f, MAT_RIBBON);
+    }
+    int found = 0;
+    for (int side = -1; side <= 1; side += 2) { /* the right bell is drawn over the left one */
+        float px = BELL_CX + side * 24.0f, dx = x - px, dy = y - 66.0f;
+        float s = side * TWIN_SIN; /* rotate the point into the bell's own frame */
+        float qx = (dx * TWIN_COS - dy * s) / TWIN_SCALE + BELL_CX;
+        float qy = (dx * s + dy * TWIN_COS) / TWIN_SCALE + BELL_PIVOT;
+        float m[3];
+        int part = bell_hit(qx, qy, m);
+        if (part) { /* and the normal back */
+            found = set_n(n, m[0] * TWIN_COS + m[1] * s, -m[0] * s + m[1] * TWIN_COS, m[2], part);
+        }
+    }
+    return found;
+}
+
+/* Flat: the classic outline as a modern flat icon. */
+static int flat_hit(float x, float y, float n[3])
+{
+    int part = bell_hit(x, y, n);
+    return part ? MAT_FLAT + (part == 3) + 2 * (part == 1) : 0;
+}
+
+typedef int (*shape_fn)(float x, float y, float n[3]);
+static const shape_fn style_shapes[STYLE_COUNT] = {bell_hit, NULL, temple_hit, hand_hit, twin_hit, flat_hit};
+/* where each style hangs from (its swing pivot), in shape units */
+static const float style_pivot_y[STYLE_COUNT] = {BELL_PIVOT, 0, 16.0f, 10.0f, 50.0f, BELL_PIVOT};
+
+static float clamp01(float v)
+{
+    return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+}
+
+/* lv_color32_t byte order: blue, green, red, alpha (straight alpha). */
+static void put_px(uint8_t *px, float r, float g, float b, float a)
+{
+    px[0] = (uint8_t)(255.0f * clamp01(b));
+    px[1] = (uint8_t)(255.0f * clamp01(g));
+    px[2] = (uint8_t)(255.0f * clamp01(r));
+    px[3] = (uint8_t)(255.0f * clamp01(a));
+}
+
+/* Colour of one surface sample: lit metal or wood, white ribbon, or unlit flat. */
+static void shade(int part, const float n[3], const float base[3], float out[3])
+{
+    static const float wood[3] = {0x8B / 255.0f, 0x5A / 255.0f, 0x2B / 255.0f};
+    static const float ribbon[3] = {0xF4 / 255.0f, 0xF4 / 255.0f, 0xF4 / 255.0f};
+    const float *c = part == MAT_WOOD ? wood : part == MAT_RIBBON ? ribbon : base;
+
+    if (part >= MAT_FLAT) { /* flat icon: darker rim and clapper, no lighting */
+        float k = part == MAT_FLAT ? 1.0f : part == MAT_FLAT + 1 ? 0.72f : 0.86f;
+        for (int i = 0; i < 3; i++)
+            out[i] = c[i] * k;
+        return;
+    }
+    /* Light from the upper left, viewer straight ahead; Blinn half vector h. */
+    static const float l[3] = {-0.45f, -0.6f, 0.66f}, h[3] = {-0.247035f, -0.329380f, 0.911285f};
+    float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    float diff = fmaxf(0.0f, (n[0] * l[0] + n[1] * l[1] + n[2] * l[2]) / nl);
+    float spec = fmaxf(0.0f, (n[0] * h[0] + n[1] * h[1] + n[2] * h[2]) / nl);
+    spec *= spec; /* ^32 */
+    spec *= spec;
+    spec *= spec;
+    spec *= spec;
+    spec *= spec;
+    if (part == MAT_WOOD)
+        spec *= 0.25f; /* wood is not shiny */
+    /* Rims and knobs catch a little more light; the clapper sits in shadow. */
+    float amb = part == 3 ? 0.25f : 0.38f, kd = part == 1 || part == 4 ? 0.8f : 0.7f;
+    for (int i = 0; i < 3; i++)
+        out[i] = fminf(1.0f, c[i] * (amb + kd * diff) + 0.6f * spec);
+}
+
+/*
+ * Draws a bell style into a w x h ARGB8888 buffer. `scale` maps shape units to
+ * pixels and the shape is centred horizontally (thumbnails are square).
+ */
+static void render_shape(uint32_t style, uint32_t color, uint8_t *buf, int w, int h, float scale)
+{
+    const float base[3] = {((color >> 16) & 0xFF) / 255.0f, ((color >> 8) & 0xFF) / 255.0f, (color & 0xFF) / 255.0f};
+    const float ox = (w / scale - CLASSIC_W) / 2.0f;
+    shape_fn hit = style_shapes[style];
+
+    for (int py = 0; py < h; py++) {
+        uint8_t *px = buf + py * w * 4;
+        for (int x = 0; x < w; x++, px += 4) {
             float acc[3] = {0, 0, 0};
             int hits = 0;
-            for (int sy = 0; sy < BELL_SS; sy++) {
-                for (int sx = 0; sx < BELL_SS; sx++) {
-                    float n[3];
-                    int part = bell_hit(x + (sx + 0.5f) / BELL_SS, py * BELL_SS + sy, n);
+            for (int sy = 0; sy < CLASSIC_SS; sy++) {
+                for (int sx = 0; sx < CLASSIC_SS; sx++) {
+                    float n[3], c[3];
+                    float u = (x + (sx + 0.5f) / CLASSIC_SS) / scale - ox, v = (py + (sy + 0.5f) / CLASSIC_SS) / scale;
+                    int part = hit(u, v, n);
                     if (!part)
                         continue;
-                    float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-                    float diff = fmaxf(0.0f, (n[0] * l[0] + n[1] * l[1] + n[2] * l[2]) / nl);
-                    float spec = fmaxf(0.0f, (n[0] * h[0] + n[1] * h[1] + n[2] * h[2]) / nl);
-                    spec *= spec; /* ^32 */
-                    spec *= spec;
-                    spec *= spec;
-                    spec *= spec;
-                    spec *= spec;
-                    /* Rim and knob catch a little more light; the clapper sits in shadow. */
-                    float amb = part == 3 ? 0.25f : 0.38f, kd = part == 1 || part == 4 ? 0.8f : 0.7f;
-                    for (int c = 0; c < 3; c++)
-                        acc[c] += fminf(255.0f, base[c] * (amb + kd * diff) + 255.0f * 0.6f * spec);
+                    shade(part, n, base, c);
+                    if (style == STYLE_FLAT) { /* shine: a thin white arc on the upper left of the dome */
+                        float a = u - 84.0f, b = v - 78.0f, e = a * a / 400.0f + b * b / 900.0f;
+                        if (e > 0.55f && e <= 1.0f && a < 0.0f && b < 10.0f)
+                            for (int i = 0; i < 3; i++)
+                                c[i] += (1.0f - c[i]) * 0.6f;
+                    }
+                    for (int i = 0; i < 3; i++)
+                        acc[i] += c[i];
                     hits++;
                 }
             }
-            /* lv_color32_t byte order: blue, green, red, alpha (straight alpha). */
-            px[0] = hits ? (uint8_t)(acc[2] / hits) : 0;
-            px[1] = hits ? (uint8_t)(acc[1] / hits) : 0;
-            px[2] = hits ? (uint8_t)(acc[0] / hits) : 0;
-            px[3] = (uint8_t)(hits * 255 / (BELL_SS * BELL_SS));
+            if (hits)
+                put_px(px, acc[0] / hits, acc[1] / hits, acc[2] / hits, hits / (float)(CLASSIC_SS * CLASSIC_SS));
+            else
+                put_px(px, 0, 0, 0, 0);
         }
     }
 }
 
-static void update_bell_art(void)
+/*
+ * One pixel of the push-button disc of radius r, at (fx, fy) from its centre:
+ * colour into rgb, returns coverage (0 outside). `edge` is the rim width.
+ */
+static float button_px(float fx, float fy, float r, float edge, const float base[3], float rgb[3])
 {
-    render_bell(bell_colors[bell_idx].color);
-    lv_image_cache_drop(&bell_dsc);
+    float d = sqrtf(fx * fx + fy * fy);
+    float cov = clamp01(r - d + 0.5f); /* anti-aliased edge */
+    if (cov <= 0.0f)
+        return 0.0f;
+    float lit = 1.18f - 0.38f * (fy + r) / (2.0f * r); /* lit from above */
+    float rim = clamp01(1.0f - (r - d) / edge);        /* darker raised edge */
+    float gx = fx / (r * 0.78f), gy = (fy + r * 0.42f) / (r * 0.42f);
+    float gloss = clamp01(1.0f - (gx * gx + gy * gy));
+    gloss = gloss * sqrtf(gloss) * 0.35f;               /* soft highlight, upper half */
+    for (int k = 0; k < 3; k++) {
+        float v = clamp01(base[k] * lit * (1.0f - 0.25f * rim));
+        rgb[k] = v + (1.0f - v) * gloss;
+    }
+    return cov;
+}
+
+static void render_button(uint32_t color)
+{
+    const float c = BTN_SIZE / 2.0f;
+    const float base[3] = {((color >> 16) & 0xFF) / 255.0f, ((color >> 8) & 0xFF) / 255.0f, (color & 0xFF) / 255.0f};
+
+    for (int y = 0; y < BTN_SIZE; y++) {
+        uint8_t *px = btn_buf + y * BTN_SIZE * 4;
+        for (int x = 0; x < BTN_SIZE; x++, px += 4) {
+            float fx = x + 0.5f - c, fy = y + 0.5f - c, rgb[3];
+            float ds = sqrtf(fx * fx + (fy - 7.0f) * (fy - 7.0f)); /* shadow falls a little below */
+            float sh = clamp01((BTN_R + 12.0f - ds) / 22.0f);
+            sh = sh * sh * 0.45f;
+            float cov = button_px(fx, fy, BTN_R, 6.0f, base, rgb);
+            if (cov <= 0.0f)
+                put_px(px, 0, 0, 0, sh);
+            else
+                put_px(px, rgb[0], rgb[1], rgb[2], cov + sh * (1.0f - cov));
+        }
+    }
+}
+
+/* Small push-button for the style picker: the disc with the white bell on it. */
+static void render_button_thumb(uint32_t color, uint8_t *buf, int size)
+{
+    const float c = size / 2.0f, r = size * 0.46f, gs = 1.4f * r / CLASSIC_H; /* bell ~70 % of the disc */
+    const float base[3] = {((color >> 16) & 0xFF) / 255.0f, ((color >> 8) & 0xFF) / 255.0f, (color & 0xFF) / 255.0f};
+    float n[3];
+
+    for (int y = 0; y < size; y++) {
+        uint8_t *px = buf + y * size * 4;
+        for (int x = 0; x < size; x++, px += 4) {
+            float rgb[3];
+            float cov = button_px(x + 0.5f - c, y + 0.5f - c, r, 2.0f, base, rgb);
+            if (cov <= 0.0f) {
+                put_px(px, 0, 0, 0, 0);
+                continue;
+            }
+            int hits = 0;
+            for (int sy = 0; sy < CLASSIC_SS; sy++)
+                for (int sx = 0; sx < CLASSIC_SS; sx++)
+                    hits += bell_hit((x + (sx + 0.5f) / CLASSIC_SS - c) / gs + BELL_CX,
+                                     (y + (sy + 0.5f) / CLASSIC_SS - c) / gs + CLASSIC_H / 2.0f, n) != 0;
+            float w = hits / (float)(CLASSIC_SS * CLASSIC_SS);
+            for (int k = 0; k < 3; k++)
+                rgb[k] += (1.0f - rgb[k]) * w;
+            put_px(px, rgb[0], rgb[1], rgb[2], cov);
+        }
+    }
+}
+
+/* White bell symbol with a soft shadow down-right (it rotates with the symbol). */
+static void render_glyph(void)
+{
+    const float ox = (GLYPH_W - 216.0f * GLYPH_SCALE) / 2.0f;
+    float n[3];
+
+    for (int y = 0; y < GLYPH_H; y++) {
+        uint8_t *px = glyph_buf + y * GLYPH_W * 4;
+        for (int x = 0; x < GLYPH_W; x++, px += 4) {
+            int hits = 0, shadow = 0;
+            for (int sy = 0; sy < GLYPH_SS; sy++)
+                for (int sx = 0; sx < GLYPH_SS; sx++)
+                    hits += bell_hit((x + (sx + 0.5f) / GLYPH_SS - ox) / GLYPH_SCALE,
+                                     (y + (sy + 0.5f) / GLYPH_SS - 4.0f) / GLYPH_SCALE, n) != 0;
+            for (int sy = 0; sy < 2; sy++)
+                for (int sx = 0; sx < 2; sx++)
+                    shadow += bell_hit((x - 2.0f + (sx + 0.5f) / 2.0f - ox) / GLYPH_SCALE,
+                                       (y - 3.0f + (sy + 0.5f) / 2.0f - 4.0f) / GLYPH_SCALE, n) != 0;
+            float a = hits / (float)(GLYPH_SS * GLYPH_SS), sh = shadow / 4.0f * 0.27f;
+            if (a <= 0.0f) {
+                put_px(px, 0, 0, 0, sh);
+                continue;
+            }
+            /* barely shaded towards the right so the symbol is not flat */
+            float lit = 1.0f;
+            if (bell_hit((x + 0.5f - ox) / GLYPH_SCALE, (y + 0.5f - 4.0f) / GLYPH_SCALE, n))
+                lit = clamp01(0.97f - 0.06f * n[0]);
+            put_px(px, lit, lit, lit, a + sh * (1.0f - a));
+        }
+    }
+}
+
+static void init_dsc(lv_image_dsc_t *dsc, uint8_t **buf, int w, int h)
+{
+    *buf = lv_malloc(w * h * 4);
+    LV_ASSERT_MALLOC(*buf);
+    memset(dsc, 0, sizeof(*dsc));
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_ARGB8888;
+    dsc->header.w = w;
+    dsc->header.h = h;
+    dsc->header.stride = w * 4;
+    dsc->data_size = w * h * 4;
+    dsc->data = *buf;
+}
+
+/*
+ * Redraws the art of the current style in the current bell colour, and with
+ * `thumbs` also the style picker's thumbnails (they only change with colour).
+ */
+static void update_bell_art(bool thumbs)
+{
+    uint32_t color = bell_colors[bell_idx].color;
+
+    if (bell_style == STYLE_BUTTON) {
+        render_button(color);
+        lv_image_cache_drop(&btn_dsc);
+    } else {
+        render_shape(bell_style, color, classic_buf, CLASSIC_W, CLASSIC_H, 1.0f);
+        lv_image_cache_drop(&classic_dsc);
+    }
+    if (btn_img)
+        lv_obj_invalidate(btn_img);
     if (bell_img)
         lv_obj_invalidate(bell_img);
+
+    for (uint32_t s = 0; thumbs && s < STYLE_COUNT; s++) {
+        if (s == STYLE_BUTTON)
+            render_button_thumb(color, thumb_buf[s], THUMB);
+        else
+            render_shape(s, color, thumb_buf[s], THUMB, THUMB, THUMB / (float)CLASSIC_H);
+        lv_image_cache_drop(&thumb_dsc[s]);
+        if (style_thumbs[s])
+            lv_obj_invalidate(style_thumbs[s]);
+    }
 }
 
 static void init_bell_art(void)
 {
-    bell_buf = lv_malloc(BELL_W * BELL_H * 4);
-    LV_ASSERT_MALLOC(bell_buf);
-    memset(&bell_dsc, 0, sizeof(bell_dsc));
-    bell_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    bell_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
-    bell_dsc.header.w = BELL_W;
-    bell_dsc.header.h = BELL_H;
-    bell_dsc.header.stride = BELL_W * 4;
-    bell_dsc.data_size = BELL_W * BELL_H * 4;
-    bell_dsc.data = bell_buf;
-    init_body_profile();
+    init_dsc(&classic_dsc, &classic_buf, CLASSIC_W, CLASSIC_H);
+    init_dsc(&btn_dsc, &btn_buf, BTN_SIZE, BTN_SIZE);
+    init_dsc(&glyph_dsc, &glyph_buf, GLYPH_W, GLYPH_H);
+    for (uint32_t s = 0; s < STYLE_COUNT; s++)
+        init_dsc(&thumb_dsc[s], &thumb_buf[s], THUMB, THUMB);
+    render_glyph();
 }
 
 /* ---------- theme ---------- */
@@ -323,6 +669,7 @@ static void apply_theme(void)
     lv_style_set_text_color(&st_accent, lv_color_hex(t->on_accent));
     lv_style_set_bg_color(&st_accent_pressed, lv_color_darken(lv_color_hex(t->accent), LV_OPA_20));
     lv_style_set_arc_color(&st_wave, lv_color_hex(bell_colors[bell_idx].color));
+    lv_style_set_border_color(&st_halo, lv_color_hex(bell_colors[bell_idx].color));
     lv_style_set_arc_color(&st_progress, lv_color_hex(t->accent));
     lv_style_set_bg_color(&st_dot, lv_color_hex(t->muted));
     lv_style_set_outline_color(&st_swatch_checked, lv_color_hex(t->text));
@@ -358,6 +705,10 @@ static void init_styles(void)
     lv_style_init(&st_wave);
     lv_style_set_arc_width(&st_wave, 6);
     lv_style_set_arc_rounded(&st_wave, true);
+
+    lv_style_init(&st_halo);
+    lv_style_set_radius(&st_halo, LV_RADIUS_CIRCLE);
+    lv_style_set_border_width(&st_halo, 3);
 
     lv_style_init(&st_progress);
     lv_style_set_arc_width(&st_progress, 6);
@@ -563,6 +914,8 @@ static void refresh_values(void)
         lv_obj_set_state(theme_cards[i], LV_STATE_CHECKED, i == theme_idx);
     for (uint32_t i = 0; i < BELL_COLOR_COUNT; i++)
         lv_obj_set_state(swatches[i], LV_STATE_CHECKED, i == bell_idx);
+    for (uint32_t i = 0; i < STYLE_COUNT; i++)
+        lv_obj_set_state(style_cards[i], LV_STATE_CHECKED, i == bell_style);
     for (uint32_t i = 0; i < DURATION_COUNT; i++)
         lv_obj_set_state(duration_btns[i], LV_STATE_CHECKED, durations[i] == ring_seconds);
     refresh_net();
@@ -594,9 +947,65 @@ static void wave_opa_cb(void *obj, int32_t v)
     lv_obj_set_style_arc_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
 }
 
+/* Idle invitation to press: a ring grows out of the button edge and fades. v: 0..1000 */
+static void halo_cb(void *obj, int32_t v)
+{
+    int32_t d = (int32_t)(2 * BTN_R) + 4 + 56 * v / 1000;
+    lv_obj_set_size((lv_obj_t *)obj, d, d);
+    lv_obj_align((lv_obj_t *)obj, LV_ALIGN_TOP_MID, 0, BTN_CY - d / 2);
+    lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)(170 * (1000 - v) / 1000), LV_PART_MAIN);
+}
+
+static void set_halo(bool run)
+{
+    lv_anim_delete(halo, halo_cb);
+    if (!run) {
+        lv_obj_add_flag(halo, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_remove_flag(halo, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, halo);
+    lv_anim_set_exec_cb(&a, halo_cb);
+    lv_anim_set_values(&a, 0, 1000);
+    lv_anim_set_duration(&a, 1600);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_repeat_delay(&a, 900);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
+}
+
+/* Arranges the home screen for the current bell style (art must be rendered). */
+static void apply_bell_style(void)
+{
+    bool button = bell_style == STYLE_BUTTON;
+    int32_t cy = button ? BTN_CY : CLASSIC_CY;
+
+    if (button) {
+        lv_obj_remove_flag(btn_img, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(bell_img, &glyph_dsc);
+        lv_image_set_pivot(bell_img, GLYPH_W / 2, GLYPH_PIVOT);
+        lv_obj_align(bell_img, LV_ALIGN_TOP_MID, 0, BTN_CY - GLYPH_H / 2 - 4);
+    } else {
+        lv_obj_add_flag(btn_img, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(bell_img, &classic_dsc);
+        lv_image_set_pivot(bell_img, CLASSIC_W / 2, (int32_t)style_pivot_y[bell_style]);
+        lv_obj_align(bell_img, LV_ALIGN_TOP_MID, 0, CLASSIC_Y);
+    }
+    for (uint32_t i = 0; i < 4; i++)
+        lv_obj_align(ring_waves[i], LV_ALIGN_TOP_MID, 0, cy - lv_obj_get_height(ring_waves[i]) / 2);
+    /* the classic bell is taller, so its clock sits a little higher */
+    lv_obj_align(home_clock, LV_ALIGN_TOP_MID, 0, button ? 330 : 318);
+    lv_obj_align(home_date, LV_ALIGN_TOP_MID, 0, button ? 388 : 374);
+    set_halo(button && !is_ringing);
+}
+
 static void set_ring_animation(bool run)
 {
     lv_anim_t a;
+
+    set_halo(!run && bell_style == STYLE_BUTTON); /* the sound waves take over while ringing */
 
     lv_anim_delete(bell_img, swing_cb);
     lv_anim_delete(bell_img, settle_cb);
@@ -707,10 +1116,16 @@ static void apply_remote_settings(void)
     for (uint32_t i = 0; i < DURATION_COUNT; i++)
         if (ns.remote_ring >= 0 && durations[i] == (uint32_t)ns.remote_ring)
             ring_seconds = durations[i];
-    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, ring %us", (unsigned)theme_idx,
-              (unsigned)bell_idx, (unsigned)ring_seconds);
-    if (art)
-        update_bell_art();
+    bool style = ns.remote_style >= 0 && (uint32_t)ns.remote_style < STYLE_COUNT &&
+                 (uint32_t)ns.remote_style != bell_style;
+    if (style)
+        bell_style = ns.remote_style;
+    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, ring %us", (unsigned)theme_idx,
+              (unsigned)bell_idx, (unsigned)bell_style, (unsigned)ring_seconds);
+    if (art || style)
+        update_bell_art(art); /* thumbnails only change with the colour */
+    if (style)
+        apply_bell_style();
     apply_theme();
     refresh_values();
     save_config();
@@ -739,6 +1154,13 @@ static void net_poll_cb(lv_timer_t *t)
 
 /* ---------- event handlers ---------- */
 
+/* The button sinks slightly while pressed. */
+static void press_feedback(bool down)
+{
+    lv_image_set_scale(btn_img, down ? 244 : LV_SCALE_NONE);
+    lv_image_set_scale(bell_img, down ? 244 : LV_SCALE_NONE);
+}
+
 /*
  * The whole home page is one touch target. LVGL's own long-press time is
  * far shorter than HOLD_MS (and CLICKED still fires after it), so the hold
@@ -751,13 +1173,13 @@ static void home_touch_cb(lv_event_t *e)
 
     if (code == LV_EVENT_PRESSED) {
         press_start = lv_tick_get();
-        lv_image_set_scale(bell_img, 244); /* small press-down feedback */
+        press_feedback(true);
     } else if (code == LV_EVENT_PRESSING) {
         if (held >= HOLD_MS) {
             /* Swallow the rest of this touch so the release does not ring. */
             lv_indev_wait_release(lv_indev_active());
             lv_obj_add_flag(hold_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_image_set_scale(bell_img, LV_SCALE_NONE);
+            press_feedback(false);
             stop_ring();
             set_page(FIRST_SETTING);
         } else if (held >= 600) {
@@ -766,7 +1188,7 @@ static void home_touch_cb(lv_event_t *e)
         }
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         lv_obj_add_flag(hold_arc, LV_OBJ_FLAG_HIDDEN);
-        lv_image_set_scale(bell_img, LV_SCALE_NONE);
+        press_feedback(false);
         if (code == LV_EVENT_RELEASED && held < HOLD_MS)
             start_ring();
     }
@@ -799,7 +1221,7 @@ static void theme_cb(lv_event_t *e)
 {
     theme_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
     bell_idx = themes[theme_idx].bell; /* each theme brings its matching bell colour */
-    update_bell_art();
+    update_bell_art(true);
     apply_theme();
     refresh_values();
     save_config();
@@ -808,8 +1230,17 @@ static void theme_cb(lv_event_t *e)
 static void swatch_cb(lv_event_t *e)
 {
     bell_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
-    update_bell_art();
+    update_bell_art(true);
     apply_theme();
+    refresh_values();
+    save_config();
+}
+
+static void style_cb(lv_event_t *e)
+{
+    bell_style = (uint32_t)(intptr_t)lv_event_get_user_data(e);
+    update_bell_art(false);
+    apply_bell_style();
     refresh_values();
     save_config();
 }
@@ -902,7 +1333,7 @@ static void keyboard_cb(lv_event_t *e)
 static void create_home(lv_obj_t *p)
 {
     static const lv_point_precise_t slash_pts[] = {{0, 0}, {26, 22}};
-    /* Sound waves either side of the bell's dome (centre y=192), hidden until it rings. */
+    /* Sound waves either side of the button (centre BTN_CY), hidden until it rings. */
     static const struct {
         int16_t size, start, end;
     } waves[] = {{280, 155, 205}, {340, 155, 205}, {280, 335, 25}, {340, 335, 25}};
@@ -931,20 +1362,30 @@ static void create_home(lv_obj_t *p)
         lv_obj_set_size(a, waves[i].size, waves[i].size);
         lv_arc_set_bg_angles(a, waves[i].start, waves[i].end);
         lv_arc_set_value(a, 0);
-        lv_obj_align(a, LV_ALIGN_TOP_MID, 0, 192 - waves[i].size / 2);
+        lv_obj_align(a, LV_ALIGN_TOP_MID, 0, BTN_CY - waves[i].size / 2);
         ring_waves[i] = a;
     }
 
+    halo = add_box(p, (int32_t)(2 * BTN_R) + 4, (int32_t)(2 * BTN_R) + 4);
+    lv_obj_add_style(halo, &st_halo, LV_PART_MAIN);
+    lv_obj_align(halo, LV_ALIGN_TOP_MID, 0, BTN_CY - (int32_t)BTN_R - 2);
+
+    btn_img = lv_image_create(p);
+    lv_image_set_src(btn_img, &btn_dsc);
+    lv_image_set_antialias(btn_img, true);
+    lv_obj_remove_flag(btn_img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(btn_img, LV_ALIGN_TOP_MID, 0, BTN_CY - BTN_SIZE / 2);
+
     bell_img = lv_image_create(p);
-    lv_image_set_src(bell_img, &bell_dsc);
-    lv_image_set_pivot(bell_img, BELL_W / 2, BELL_PIVOT);
+    lv_image_set_src(bell_img, &glyph_dsc);
+    lv_image_set_pivot(bell_img, GLYPH_W / 2, GLYPH_PIVOT);
     lv_image_set_antialias(bell_img, true);
     lv_obj_remove_flag(bell_img, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(bell_img, LV_ALIGN_TOP_MID, 0, 82);
+    lv_obj_align(bell_img, LV_ALIGN_TOP_MID, 0, BTN_CY - GLYPH_H / 2 - 4);
 
     /* Filled in by update_clock() once NTP has answered; never a made-up time. */
-    home_clock = add_text(p, &lv_font_montserrat_48, 318, "--:--");
-    home_date = add_muted(p, &lv_font_montserrat_16, 374, "Waiting for network time");
+    home_clock = add_text(p, &lv_font_montserrat_48, 330, "--:--");
+    home_date = add_muted(p, &lv_font_montserrat_16, 388, "Waiting for network time");
 
     /* Hold-to-open-settings progress, traced around the screen edge. */
     hold_arc = lv_arc_create(p);
@@ -1129,6 +1570,26 @@ static void create_appearance(lv_obj_t *p)
     }
 }
 
+/* Bell style picker: 3 x 2 cards, each a thumbnail drawn in the current bell colour. */
+static void create_bell_page(lv_obj_t *p)
+{
+    add_settings_frame(p, BELL, "Bell");
+    for (uint32_t i = 0; i < STYLE_COUNT; i++) {
+        lv_obj_t *card = add_card(p, 92, 98, style_cb, (void *)(intptr_t)i);
+        lv_obj_align(card, LV_ALIGN_TOP_MID, ((int32_t)(i % 3) - 1) * 100, 80 + (int32_t)(i / 3) * 106);
+        lv_obj_t *img = lv_image_create(card);
+        lv_image_set_src(img, &thumb_dsc[i]);
+        lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 6);
+        lv_obj_t *name = lv_label_create(card);
+        lv_obj_set_style_text_font(name, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_label_set_text(name, style_names[i]);
+        lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -6);
+        style_cards[i] = card;
+        style_thumbs[i] = img;
+    }
+}
+
 static void create_duration(lv_obj_t *p)
 {
     add_settings_frame(p, DURATION, "Ring Duration");
@@ -1160,7 +1621,7 @@ static void create_ui(void)
 
     init_styles();
     init_bell_art();
-    render_bell(bell_colors[bell_idx].color);
+    update_bell_art(true);
 
     /* Nothing scrolls; gestures reach the screen from any page. */
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -1172,6 +1633,7 @@ static void create_ui(void)
     create_status_page(pages[WIFI], WIFI, LV_SYMBOL_WIFI, "Wi-Fi", &wifi_view, LV_SYMBOL_LIST "  Choose network",
                        scan_cb);
     create_appearance(pages[APPEARANCE]);
+    create_bell_page(pages[BELL]);
     create_duration(pages[DURATION]);
     create_status_page(pages[CONTROLLER], CONTROLLER, LV_SYMBOL_HOME, "Indoor Unit", &ctrl_view,
                        LV_SYMBOL_EDIT "  Set address", broker_cb);
@@ -1181,6 +1643,7 @@ static void create_ui(void)
     net_get_status(&ns);
     apply_theme();
     set_page(HOME);
+    apply_bell_style();
     lv_timer_create(net_poll_cb, 250, NULL);
 }
 
@@ -1198,7 +1661,7 @@ void user_main(void)
     board_register_hardware();
     load_config();
     net_start();
-    net_report_settings(theme_idx, bell_idx, ring_seconds);
+    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style);
 
     lv_vendor_init(DISPLAY_NAME);
     lv_vendor_disp_lock();

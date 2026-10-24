@@ -1,6 +1,6 @@
 """Settings screen of the indoor unit: Bluetooth speaker, bell tone, and the
 outdoor unit's settings (applied over MQTT, see topics.md)."""
-import time
+import json, time
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize
 from news import GENRES, REGIONS
@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel
 OUTDOOR_THEMES = ["Clean & Light", "Midnight & Gold"]
 OUTDOOR_BELLS = [("Blue", "#2F80ED"), ("Gold", "#D4A537"), ("Silver", "#A7B1BC"), ("Red", "#D64545")]
 OUTDOOR_DURATIONS = [10, 15, 30, 45, 60]
+# bell_style numbers 0..5; pictures in assets/bells/<number>_*.png
+OUTDOOR_STYLES = ["Classic", "Push button", "Temple", "Hand bell", "Twin bells", "Flat"]
+BELL_ICONS = Path(__file__).resolve().parent / "assets" / "bells"
 
 def label(text, obj=None, wrap=False):
     w = QLabel(text); w.setWordWrap(wrap)
@@ -120,20 +123,44 @@ class SpeakerPanel(QWidget):
     def showEvent(self, e):
         self.bt.request("list"); super().showEvent(e)
 
+AUDIO_TYPES = (".wav", ".mp3", ".ogg")
+TONE_CATEGORIES = ["Chimes", "Bollywood style", "Funny", "My tones"]
+
+def list_tones(folder):
+    """[(category, display name, path relative to folder)]: generated tones from
+    tones.json, plus any audio file the user drops into the folder or its `mine/`."""
+    try: catalogue = json.loads((folder / "tones.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError): catalogue = {}
+    found = []
+    for path in sorted([*folder.glob("*"), *(folder / "mine").glob("*")]):
+        if path.suffix.lower() not in AUDIO_TYPES: continue
+        rel = path.relative_to(folder).as_posix(); meta = catalogue.get(rel, {})
+        found.append((meta.get("category", "My tones"), meta.get("name", path.stem.replace("_", " ").title()), rel))
+    order = {c: i for i, c in enumerate(TONE_CATEGORIES)}
+    return sorted(found, key=lambda t: (order.get(t[0], len(order)), list(catalogue).index(t[2]) if t[2] in catalogue else 0, t[1]))
+
 class TonePanel(QWidget):
     def __init__(self, folder, settings, save, preview):
         super().__init__(); self.settings = settings; self.save = save
-        lay = QVBoxLayout(self); lay.setSpacing(12)
-        lay.addWidget(label("Bell tone", "sectionTitle"))
-        lay.addWidget(label("Played on the speaker for the whole ring, until it times out or STOP is pressed.", "secondary", True))
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(8)
+        outer.addWidget(label("Bell tone", "sectionTitle"))
+        outer.addWidget(label("Played on the speaker for the whole ring, until it times out or STOP is pressed. "
+                              "Your own .wav / .mp3 / .ogg files in assets/tones/mine/ appear under My tones.", "secondary", True))
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); touch_scroll(scroll)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget(); lay = QVBoxLayout(body); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
+        scroll.setWidget(body); outer.addWidget(scroll, 1)
         group = QButtonGroup(self); group.setExclusive(True)
-        for path in sorted(folder.glob("*.wav")):
-            row = QHBoxLayout()
-            pick = button(path.stem.replace("_", " ").title(), "choice", True, 64)
-            pick.setChecked(settings.get("tone") == path.name); group.addButton(pick)
-            pick.clicked.connect(lambda _=False, n=path.name: self.choose(n))
-            play = button("▶  Preview", h=64); play.setFixedWidth(180); play.clicked.connect(lambda _=False, p=path: preview(p))
-            row.addWidget(pick, 1); row.addWidget(play); lay.addLayout(row)
+        current = settings.get("tone", "ding_dong.wav"); grid = None; category = None; n = 0
+        for cat, name, rel in list_tones(folder):
+            if cat != category:  # new section: heading and a fresh two-column grid
+                category = cat; lay.addWidget(label(cat.upper(), "section"))
+                grid = QGridLayout(); grid.setSpacing(10); lay.addLayout(grid); n = 0
+            cell = QHBoxLayout(); cell.setSpacing(6)
+            pick = button(name, "choice", True, 60); pick.setChecked(rel == current); group.addButton(pick)
+            pick.clicked.connect(lambda _=False, r=rel: self.choose(r))
+            play = button("▶", h=60); play.setFixedWidth(64); play.clicked.connect(lambda _=False, p=folder / rel: preview(p))
+            cell.addWidget(pick, 1); cell.addWidget(play); grid.addLayout(cell, n // 2, n % 2); n += 1
         lay.addStretch()
     def choose(self, name):
         self.settings["tone"] = name; self.save()
@@ -181,15 +208,19 @@ class OutdoorPanel(QWidget):
         lay.addWidget(label("Outdoor unit", "sectionTitle"))
         self.status = label("Waiting for the outdoor unit…", "secondary", True); lay.addWidget(self.status)
 
-        def choice_row(title, options, key, values):
-            lay.addWidget(label(title, "section")); row = QHBoxLayout(); group = QButtonGroup(self); btns = []
+        def choice_row(title, options, key, values, cols=0, icons=None, h=56):
+            lay.addWidget(label(title, "section")); grid = QGridLayout(); grid.setSpacing(10); group = QButtonGroup(self); btns = []
             for i, text in enumerate(options):
-                b = button(text, "choice", True); group.addButton(b); row.addWidget(b); btns.append(b)
+                b = button(text, "choice", True, h); group.addButton(b); btns.append(b)
+                if icons and icons[i]: b.setIcon(QIcon(str(icons[i]))); b.setIconSize(QSize(h - 16, h - 16))
+                grid.addWidget(b, i // cols if cols else 0, i % cols if cols else i)
                 b.clicked.connect(lambda _=False, v=values[i]: self.set(key, v))
-            lay.addLayout(row); return btns
+            lay.addLayout(grid); return btns
         self.theme_btns = choice_row("THEME", OUTDOOR_THEMES, "theme", range(len(OUTDOOR_THEMES)))
         self.bell_btns = choice_row("BELL COLOUR", [n for n, _ in OUTDOOR_BELLS], "bell_color", range(len(OUTDOOR_BELLS)))
         for b, (_, color) in zip(self.bell_btns, OUTDOOR_BELLS): b.setIcon(dot_icon(color)); b.setIconSize(QSize(22, 22))
+        icons = [next(BELL_ICONS.glob(f"{i}_*.png"), None) for i in range(len(OUTDOOR_STYLES))]
+        self.style_btns = choice_row("BELL STYLE", OUTDOOR_STYLES, "bell_style", range(len(OUTDOOR_STYLES)), cols=3, icons=icons, h=84)
         self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
 
         lay.addWidget(label("WI-FI", "section"))
@@ -245,6 +276,7 @@ class OutdoorPanel(QWidget):
                                 (f"   ·   firmware {s['firmware']}" if s.get("firmware") else ""))
         for btns, key, values in [(self.theme_btns, "theme", list(range(len(OUTDOOR_THEMES)))),
                                   (self.bell_btns, "bell_color", list(range(len(OUTDOOR_BELLS)))),
+                                  (self.style_btns, "bell_style", list(range(len(OUTDOOR_STYLES)))),
                                   (self.ring_btns, "ring_seconds", OUTDOOR_DURATIONS)]:
             for b, v in zip(btns, values): b.setChecked(s.get(key) == v)
         self.wifi_now.setText(f"Connected to {s['wifi_ssid']} ({s.get('ip') or 'no address'})" if s.get("wifi_ssid") else "Not reported yet")
