@@ -1,1 +1,232 @@
-"# smart-door-bell" 
+<div align="center">
+
+# 🔔 Smart Doorbell
+
+**A round-screen doorbell on a Tuya T5 board, and a wall dashboard on a Raspberry Pi
+that rings, shows the camera, and lets you answer from inside.**
+
+![TuyaOpen](https://img.shields.io/badge/TuyaOpen-T5AI-ff4800)
+![LVGL](https://img.shields.io/badge/LVGL-9.1-2f80ed)
+![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-5-c51a4a?logo=raspberrypi&logoColor=white)
+![MQTT](https://img.shields.io/badge/MQTT-Mosquitto-660066?logo=eclipsemosquitto&logoColor=white)
+![Qt](https://img.shields.io/badge/PySide6-Qt%206-41cd52?logo=qt&logoColor=white)
+
+<img src="docs/images/indoor_photo.jpg" alt="Indoor dashboard on a 10-inch display, showing the clock and Bangalore top stories over a sunset landscape" width="820">
+
+<sub>The indoor dashboard on its 10-inch display: clock, live headlines, shortcuts and recent doorbell events.</sub>
+
+</div>
+
+---
+
+## ✨ At a glance
+
+| | Outdoor unit — at the door | Indoor unit — on the wall |
+|---|---|---|
+| **Hardware** | Tuya T5 (T5AI) board with a 1.75″ 466×466 round AMOLED touch display | Raspberry Pi 5 + 10″ HDMI display + Bluetooth speaker |
+| **When a visitor taps** | The bell swings, sound waves pulse, the ring is sent to the indoor unit | Chime plays on the speaker, the door camera appears with a big **STOP** |
+| **Day to day** | Bell, clock and date on a crisp round screen | Big clock over rotating **news** or a **photo** slideshow |
+| **Setup** | Wi-Fi, theme, bell colour, ring time — on the round screen | The same outdoor settings, plus speaker, tone and news — from the wall |
+
+---
+
+## 🧭 How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Visitor
+    participant O as 🛎️ Outdoor unit<br/>(Tuya T5)
+    participant B as 📨 MQTT broker<br/>(Mosquitto on the Pi)
+    participant I as 🖥️ Indoor dashboard<br/>(Raspberry Pi)
+    Visitor->>O: tap the bell
+    O->>B: start {timer: 30 s, event_id}
+    B->>I: start
+    I-->>O: ack {event_id}
+    Note over O: no ack in 2 s → resend<br/>(up to 3 times, same event_id)
+    Note over I: chime loops on the speaker<br/>camera feed + countdown + STOP
+    alt STOP pressed indoors
+        I->>O: stop
+        Note over O: back to the main screen
+    else timer runs out
+        Note over O,I: both sides stop on their own
+    end
+```
+
+Everything stays on your home network: the doorbell talks to a Mosquitto broker on the Pi, and
+the Pi reads the camera directly over RTSP. No cloud account is needed.
+
+---
+
+## 🛎️ Outdoor unit — Tuya T5 round display
+
+<div align="center">
+<img src="docs/images/outdoor_screens.png" alt="Three round doorbell screens: blue bell on a light theme, the blue bell swinging with sound waves, and a gold bell on a dark theme" width="860">
+
+<sub><b>Home</b> (Clean &amp; Light) · <b>Ringing</b> · <b>Home</b> (Midnight &amp; Gold)<br/>
+Rendered from the firmware's own layout, colours and bell shading — not a photo of the device.</sub>
+</div>
+
+**Board:** Tuya T5-E1 / **Waveshare T5AI 1.75″ Touch AMOLED** development board — 466×466 round AMOLED,
+capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_AMOLED_1_75`).
+
+- 🔔 **Tap to ring** — a 3D-shaded bell (drawn on the device at full resolution, no blurry bitmaps) swings with pulsing sound waves
+- ✋ **Hold 5 s for settings** — a ring traces the screen edge while you hold
+- 📶 **Wi-Fi setup on the screen** — scan, pick a network, type the password on a keyboard sized for the round display; saved and reconnected after every reboot; a wrong password never loses the network that worked
+- 🕒 **Network clock** — time and date from NTP (IST), never a made-up time
+- 🎨 **Themes** — *Clean & Light* or *Midnight & Gold* (true black, AMOLED-friendly), four bell colours
+- ⏱️ **Ring duration** — 10 / 15 / 30 / 45 / 60 s
+- 📨 **Reliable ring delivery** — every press carries an `event_id`; resent every 2 s until the indoor unit acknowledges it
+- 🔄 **Remote settings** — everything above can also be changed from the indoor dashboard
+- 💾 Settings survive restarts (encrypted on-board key–value storage)
+
+---
+
+## 🖥️ Indoor unit — Raspberry Pi dashboard
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/indoor_news.jpg" alt="Dashboard showing a large India top-stories headline with the next three headlines listed"></td>
+<td width="50%"><img src="docs/images/indoor_photos.jpg" alt="Dashboard showing a full-screen sunset landscape with the clock and recent events"></td>
+</tr>
+<tr>
+<td align="center"><b>News</b> — a headline every 12 s, tagged by region, genre and source</td>
+<td align="center"><b>Photos</b> — full-screen landscapes, sliding every 15 s</td>
+</tr>
+</table>
+
+- 🕒 **Ambient home screen** — large clock and date over a full-screen backdrop; one tap switches **News ⇄ Photos**
+- 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
+- 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
+- 🚪 **Visitor alert** — live VIGI camera feed (RTSP), countdown and a big **STOP** that also returns the doorbell to its main screen
+- 🔊 **Chimes on a Bluetooth speaker** — loops for the whole ring until the timer ends or STOP is pressed
+- 📋 **Recent events** — the last rings at a glance
+- 🚀 **Starts at boot** — restarts itself if it ever crashes
+
+### ⚙️ Settings
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/settings_speaker.png" alt="Speaker settings: sound output, volume slider, search, test sound and a list showing a connected Philips BT100"></td>
+<td width="50%"><img src="docs/images/settings_tone.png" alt="Bell tone settings: five chimes with preview buttons, Westminster selected"></td>
+</tr>
+<tr>
+<td align="center"><b>Speaker</b> — pair, connect, volume, test</td>
+<td align="center"><b>Bell tone</b> — five chimes with preview</td>
+</tr>
+<tr>
+<td><img src="docs/images/settings_news.png" alt="News settings: region and genre toggle buttons"></td>
+<td><img src="docs/images/settings_outdoor.png" alt="Outdoor unit settings: theme, bell colour, ring duration and Wi-Fi of the doorbell"></td>
+</tr>
+<tr>
+<td align="center"><b>News</b> — any regions × any genres</td>
+<td align="center"><b>Outdoor unit</b> — configure the doorbell from the wall</td>
+</tr>
+</table>
+
+---
+
+## 🧰 What you need
+
+| Part | Used for |
+|---|---|
+| Tuya T5-E1 / Waveshare T5AI 1.75″ Touch AMOLED board | Outdoor doorbell |
+| Raspberry Pi 5 (Raspberry Pi OS desktop) | Indoor dashboard and MQTT broker |
+| 10″ HDMI display (touch recommended) | Dashboard screen |
+| Bluetooth speaker | Chime |
+| TP-Link VIGI (or any RTSP) camera — optional | Live view of the door |
+
+---
+
+## 🚀 Getting started
+
+### 1 · Indoor unit (Raspberry Pi)
+
+```bash
+sudo apt install -y python3-pyside6.qtwidgets python3-pyside6.qtgui python3-pyside6.qtcore \
+                    python3-pygame python3-opencv python3-paho-mqtt mosquitto mosquitto-clients
+# let the doorbell reach the broker from your LAN
+printf 'listener 1883\nallow_anonymous true\n' | sudo tee /etc/mosquitto/conf.d/doorbell.conf
+sudo systemctl restart mosquitto
+sudo ufw allow from 192.168.1.0/24 to any port 1883 proto tcp   # only if ufw is active; use your subnet
+
+cp -r Indoor ~/Indoor && cd ~/Indoor
+python3 app.py                      # try it
+sh autostart/install.sh             # start it at every boot
+```
+
+Set the camera in `~/Indoor/config.json` → `"camera": {"rtsp_url": "rtsp://USER:PASS@CAMERA_IP:554/stream1"}`.
+Pair the speaker, pick a tone and choose your news under **⚙ Settings**.
+Full details: **[Indoor/README.md](Indoor/README.md)**.
+
+### 2 · Outdoor unit (Tuya T5)
+
+The firmware is a [TuyaOpen](https://github.com/tuya/TuyaOpen) application. Put the `Outdoor` folder inside your
+TuyaOpen checkout (for example `TuyaOpen/apps/doorbell_outdoor`), then:
+
+```bash
+. ./export.sh                 # in the TuyaOpen root (export.ps1 on Windows)
+cd apps/doorbell_outdoor
+tos.py build
+tos.py flash -p COM6          # your serial port
+```
+
+### 3 · Connect them
+
+On the doorbell: **hold the screen 5 s → Wi-Fi** → join your network, then **Indoor Unit → Set address** → the Pi's IP
+(`hostname -I` on the Pi). The page turns **Connected** within seconds. From then on everything can be changed from
+the dashboard's **⚙ Settings → Outdoor unit**.
+
+> **Tip:** reserve the Pi's address in your router (DHCP reservation) so the doorbell never loses it.
+
+---
+
+## 📨 MQTT topics
+
+| Topic | Direction | Purpose |
+|---|---|---|
+| `home/doorbell/start` | outdoor → indoor | Ring, with `timer` and `event_id` |
+| `home/doorbell/ack` | indoor → outdoor | Start received (also for duplicates) |
+| `home/doorbell/stop` | both ways | Stop ringing |
+| `home/doorbell/outdoor/state` | outdoor → indoor (retained) | Doorbell settings and network |
+| `home/doorbell/outdoor/online` | outdoor → indoor (retained) | `online` / `offline` (last will) |
+| `home/doorbell/outdoor/config` | indoor → outdoor | Change doorbell settings |
+| `home/doorbell/outdoor/wifi_scan` | outdoor → indoor | Networks the doorbell can see |
+
+Payloads and rules: **[Indoor/topics.md](Indoor/topics.md)**.
+
+---
+
+## 📁 Project layout
+
+```
+doorbell/
+├── Outdoor/                 TuyaOpen firmware for the T5 round display
+│   ├── src/doorbell_ui.c      LVGL screens, bell rendering, touch, settings
+│   ├── src/doorbell_net.c     Wi-Fi, NTP clock, MQTT client, remote settings
+│   └── app_default.config     board: WAVESHARE_T5AI_TOUCH_AMOLED_1_75
+├── Indoor/                  Raspberry Pi dashboard (Python, PySide6)
+│   ├── app.py                 dashboard, ring screen, camera, MQTT
+│   ├── settings_ui.py         settings screens and on-screen keyboard
+│   ├── news.py · bluetooth.py news feed · speaker pairing
+│   ├── assets/                tones, scenic photos (with credits)
+│   └── autostart/             start at boot
+└── docs/images/             pictures used in this README
+```
+
+---
+
+## 🔒 Good to know
+
+- The MQTT link is **unauthenticated and unencrypted** — fine on a trusted home LAN; add a password file for anything more.
+  The doorbell's Wi-Fi password travels in clear text when it is changed from the dashboard.
+- Both devices must be able to reach each other: avoid guest Wi-Fi networks, which block devices from talking to each other.
+- The *Front door* shortcut on the dashboard is a placeholder for an on-demand camera view.
+
+## 🙏 Credits
+
+Built on [TuyaOpen](https://github.com/tuya/TuyaOpen) and [LVGL](https://lvgl.io) ·
+dashboard in [PySide6 / Qt](https://doc.qt.io/qtforpython-6/) ·
+landscape photos from [Unsplash](https://unsplash.com) via [Lorem Picsum](https://picsum.photos) — photographers in
+[Indoor/assets/scenic/CREDITS.md](Indoor/assets/scenic/CREDITS.md) ·
+headlines from [Google News](https://news.google.com) RSS.

@@ -1,0 +1,27 @@
+{
+  "mqtt": {
+    "host": "127.0.0.1",
+    "port": 1883,
+    "username": "",
+    "password": "",
+    "client_id": "pi-indoor-doorbell",
+    "topic_start": "home/doorbell/start",
+    "topic_stop": "home/doorbell/stop",
+    "topic_ack": "home/doorbell/ack",
+    "topic_status": "home/doorbell/indoor/status",
+    "topic_outdoor_state": "home/doorbell/outdoor/state",
+    "topic_outdoor_online": "home/doorbell/outdoor/online",
+    "topic_outdoor_config": "home/doorbell/outdoor/config",
+    "topic_outdoor_scan": "home/doorbell/outdoor/wifi_scan"
+  },
+  "camera": {
+    "rtsp_url": ""
+  },
+  "scenic": {
+    "folder": "assets/scenic",
+    "interval_seconds": 15
+  },
+  "bell_audio": "assets/bell.wav",
+  "default_timer_seconds": 30,
+  "demo_mode": false
+}

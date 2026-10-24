@@ -1,0 +1,5 @@
+PySide6>=6.6
+paho-mqtt>=2.0
+pygame>=2.5
+# headless: the GUI build bundles its own Qt plugins, which clash with PySide6
+opencv-python-headless>=4.8

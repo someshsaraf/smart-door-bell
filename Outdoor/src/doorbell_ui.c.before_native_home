@@ -1,0 +1,162 @@
+/*
+ * TuyaOpen doorbell UI integration starter for WAVESHARE_T5AI_TOUCH_AMOLED_1_75.
+ * Theme B is the default. The approved storyboard panels are embedded in RGB565.
+ *
+ * Before flashing: verify this file against your local TuyaOpen/LVGL version.
+ * This source uses LVGL 9 APIs, as used by current TuyaOpen LVGL examples.
+ */
+#include "tuya_cloud_types.h"
+#include "tal_api.h"
+#include "tkl_output.h"
+#include "lvgl.h"
+#include "lv_vendor.h"
+#include "board_com_api.h"
+#include "doorbell_assets.h"
+#include <string.h>
+#include <stdbool.h>
+
+#ifndef DISPLAY_NAME
+#define DISPLAY_NAME "display"
+#endif
+
+typedef enum { HOME, RINGING, COUNTDOWN, WIFI, APPEARANCE, DURATION, CONTROLLER } page_t;
+static page_t page = HOME;
+static lv_obj_t *image;
+static lv_obj_t *status_label;
+static lv_timer_t *ring_timer;
+static uint32_t ring_seconds = 30;
+static bool is_ringing;
+
+static const lv_image_dsc_t *asset(page_t p)
+{
+    switch (p) {
+        case HOME: return &db_img_home;
+        case RINGING: return &db_img_ringing;
+        case COUNTDOWN: return &db_img_countdown;
+        case WIFI: return &db_img_wifi;
+        case APPEARANCE: return &db_img_appearance;
+        case DURATION: return &db_img_duration;
+        case CONTROLLER: return &db_img_controller;
+        default: return &db_img_home;
+    }
+}
+
+/* Replace these seams with TuyaOpen Wi-Fi/storage APIs and local Pi HTTP/MQTT. */
+static void notify_pi(const char *event)
+{
+    PR_NOTICE("[DOORBELL] Event: %s (network transport not yet wired)", event);
+}
+static void save_config(void)
+{
+    PR_NOTICE("[DOORBELL] Save theme/ring duration/Wi-Fi via T5 persistent storage API");
+}
+
+static void set_page(page_t p)
+{
+    page = p;
+    lv_image_set_src(image, asset(p));
+    lv_obj_center(image);
+    lv_image_set_scale(image, 1024); /* 117px artwork scaled 4x for 466px panel */
+    const char *msg = "Theme B - Clean & Light";
+    switch (p) {
+        case HOME: msg = "Tap bell to ring | Long press for settings"; break;
+        case RINGING: msg = "RINGING - stop from indoor controller"; break;
+        case COUNTDOWN: msg = "Ring timeout active"; break;
+        case WIFI: msg = "Wi-Fi settings - connect/persist integration pending"; break;
+        case APPEARANCE: msg = "Appearance - Clean & Light default"; break;
+        case DURATION: msg = "Ring duration setting"; break;
+        case CONTROLLER: msg = "Indoor Raspberry Pi 5 - transport pending"; break;
+    }
+    lv_label_set_text(status_label, msg);
+}
+static void timeout_cb(lv_timer_t *t)
+{
+    (void)t; ring_timer = NULL; is_ringing = false; set_page(HOME);
+}
+static void stop_ring(void)
+{
+    if (ring_timer) { lv_timer_delete(ring_timer); ring_timer = NULL; }
+    if (is_ringing) notify_pi("STOP");
+    is_ringing = false; set_page(HOME);
+}
+static void start_ring(void)
+{
+    if (is_ringing) return;
+    is_ringing = true;
+    notify_pi("DOORBELL_PRESSED");
+    set_page(RINGING);
+    ring_timer = lv_timer_create(timeout_cb, ring_seconds * 1000, NULL);
+}
+static void touch_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_LONG_PRESSED) set_page(WIFI);
+    else if (code == LV_EVENT_CLICKED) start_ring();
+}
+static void button_cb(lv_event_t *e)
+{
+    const char *txt = (const char *)lv_event_get_user_data(e);
+    if (!txt) return;
+    if (!strcmp(txt,"Wi-Fi")) set_page(WIFI);
+    else if (!strcmp(txt,"Appearance")) set_page(APPEARANCE);
+    else if (!strcmp(txt,"Duration")) set_page(DURATION);
+    else if (!strcmp(txt,"Indoor Pi")) set_page(CONTROLLER);
+    else if (!strcmp(txt,"Close")) set_page(HOME);
+    else if (!strcmp(txt,"Stop")) stop_ring();
+    else if (!strcmp(txt,"10s")) ring_seconds=10;
+    else if (!strcmp(txt,"15s")) ring_seconds=15;
+    else if (!strcmp(txt,"30s")) ring_seconds=30;
+    else if (!strcmp(txt,"45s")) ring_seconds=45;
+    else if (!strcmp(txt,"60s")) ring_seconds=60;
+    save_config();
+}
+static void add_button(lv_obj_t *parent, const char *text)
+{
+    lv_obj_t *b=lv_button_create(parent);
+    lv_obj_set_size(b, 70, 38);
+    lv_obj_t *l=lv_label_create(b); lv_label_set_text(l,text); lv_obj_center(l);
+    lv_obj_add_event_cb(b,button_cb,LV_EVENT_CLICKED,(void*)text);
+}
+void user_main(void)
+{
+    tal_log_init(TAL_LOG_LEVEL_DEBUG,4096,(TAL_LOG_OUTPUT_CB)tkl_log_output);
+    board_register_hardware();
+    lv_vendor_init(DISPLAY_NAME);
+    lv_vendor_disp_lock();
+    lv_obj_t *root=lv_screen_active();
+    lv_obj_set_style_bg_color(root,lv_color_hex(0xF0F4F8),LV_PART_MAIN);
+    image=lv_image_create(root);
+    lv_image_set_src(image,&db_img_home);
+    lv_image_set_scale(image,1024);
+    lv_obj_center(image);
+    lv_obj_t *touch=lv_obj_create(root);
+    lv_obj_remove_style_all(touch);
+    lv_obj_set_size(touch,340,300);
+    lv_obj_align(touch,LV_ALIGN_CENTER,0,25);
+    lv_obj_set_style_bg_opa(touch,LV_OPA_TRANSP,LV_PART_MAIN);
+    lv_obj_add_flag(touch,LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(touch,touch_cb,LV_EVENT_CLICKED,NULL);
+    lv_obj_add_event_cb(touch,touch_cb,LV_EVENT_LONG_PRESSED,NULL);
+    lv_obj_t *bar=lv_obj_create(root);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar,460,42);
+    lv_obj_align(bar,LV_ALIGN_BOTTOM_MID,0,-2);
+    lv_obj_set_flex_flow(bar,LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bar,LV_FLEX_ALIGN_SPACE_EVENLY,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(bar,LV_OPA_TRANSP,LV_PART_MAIN);
+    add_button(bar,"Wi-Fi"); add_button(bar,"Appearance"); add_button(bar,"Duration");
+    add_button(bar,"Indoor Pi"); add_button(bar,"Close"); add_button(bar,"Stop");
+    status_label=lv_label_create(root);
+    lv_obj_set_style_text_color(status_label,lv_color_hex(0x173B5C),LV_PART_MAIN);
+    lv_obj_align(status_label,LV_ALIGN_TOP_MID,0,2);
+    set_page(HOME);
+    lv_vendor_disp_unlock();
+    lv_vendor_start(5,1024*8);
+}
+#if OPERATING_SYSTEM == SYSTEM_LINUX
+int main(int argc,char **argv){(void)argc;(void)argv;user_main();for(;;)tal_system_sleep(500);return 0;}
+#else
+static THREAD_HANDLE app_thread=NULL;
+static void app_task(void *arg){(void)arg;user_main();tal_thread_delete(app_thread);app_thread=NULL;}
+void tuya_app_main(void){THREAD_CFG_T c;memset(&c,0,sizeof(c));c.stackDepth=4096;c.priority=THREAD_PRIO_1;c.thrdname="doorbell";tal_thread_create_and_start(&app_thread,NULL,NULL,app_task,NULL,&c);}
+#endif
