@@ -1,0 +1,15 @@
+# Outdoor firmware: build tree and built images (rebuild with `tos.py build`;
+# publish firmware binaries as GitHub release assets instead)
+Outdoor/.build/
+Outdoor/dist/
+
+# Indoor dashboard: per-device state and caches
+Indoor/settings.json
+Indoor/news_cache.json
+Indoor/app.log
+Indoor/app.log.old
+__pycache__/
+*.pyc
+
+# Editor settings with paths of one PC
+.vscode/
