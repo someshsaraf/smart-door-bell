@@ -1,6 +1,9 @@
 # Keep LF line endings in every checkout (also on Windows with core.autocrlf=true):
 # the Indoor files are copied to the Raspberry Pi, where CRLF breaks the shell scripts.
 * text=auto eol=lf
+# ...except Windows batch files, which cmd needs with CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
 
 *.jpg binary
 *.png binary

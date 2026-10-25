@@ -1,11 +1,11 @@
 # Builds the doorbell firmware, and optionally flashes it and shows its log.
 #
-#   .\build.ps1                          build only
-#   .\build.ps1 -Flash COM6              build, then flash over COM6
-#   .\build.ps1 -Flash COM6 -Monitor     ... then show the doorbell's log (Ctrl+C to stop)
-#   .\build.ps1 -Clean                   start from a clean build tree
+#   .\build.cmd                          build only
+#   .\build.cmd -Flash COM6              build, then flash over COM6
+#   .\build.cmd -Flash COM6 -Monitor     ... then show the doorbell's log (Ctrl+C to stop)
+#   .\build.cmd -Clean                   start from a clean build tree
 #
-# Uses the SDK in sdk/TuyaOpen (after .\setup.ps1), or, for a checkout that lives
+# Uses the SDK in sdk/TuyaOpen (after .\setup.cmd), or, for a checkout that lives
 # inside a TuyaOpen tree (examples/...), that TuyaOpen.
 param([string]$Flash, [switch]$Monitor, [switch]$Clean)
 $ErrorActionPreference = "Continue"  # the SDK tools print progress on stderr; exit codes are checked instead
@@ -17,7 +17,7 @@ if (-not (Test-Path (Join-Path $sdk "export.ps1"))) {
     for ($d = Split-Path $root -Parent; $d; $d = Split-Path $d -Parent) {
         if (Test-Path (Join-Path $d "export.ps1")) { $sdk = $d; break }
     }
-    if (-not $sdk) { throw "No TuyaOpen SDK: run .\setup.ps1 first" }
+    if (-not $sdk) { throw "No TuyaOpen SDK: run .\setup.cmd first" }
 }
 Write-Host "SDK: $sdk" -ForegroundColor DarkGray
 Push-Location $sdk

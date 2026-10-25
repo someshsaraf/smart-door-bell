@@ -2,7 +2,7 @@
 #
 #   git clone https://github.com/someshsaraf/smart-door-bell.git
 #   cd smart-door-bell
-#   .\setup.ps1          (then:  .\build.ps1 -Flash COM6)
+#   .\setup.cmd          (then:  .\build.cmd -Flash COM6)
 #
 # Fetches the TuyaOpen SDK at the version this repo is tested with (the sdk/TuyaOpen
 # submodule), lets the SDK install its own tools (Python environment, CMake, Ninja,
@@ -33,7 +33,7 @@ $py = if ($env:OPEN_SDK_PYTHON) { $env:OPEN_SDK_PYTHON } else { "python" }
 
 Write-Host ""
 Write-Host "Done. Next:" -ForegroundColor Green
-Write-Host "  .\build.ps1                    build the doorbell firmware"
-Write-Host "  .\build.ps1 -Flash COM6        build and flash (port: Device Manager > Ports)"
-Write-Host "  .\build.ps1 -Flash COM6 -Monitor"
+Write-Host "  .\build.cmd                    build the doorbell firmware"
+Write-Host "  .\build.cmd -Flash COM6        build and flash (port: Device Manager > Ports)"
+Write-Host "  .\build.cmd -Flash COM6 -Monitor"
 Write-Host "  Copy Indoor\mqtt_psk.txt to ~/Indoor/ on the Pi and run Indoor/setup_pi.sh there (see README)."

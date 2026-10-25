@@ -195,8 +195,9 @@ all board, LVGL 9, touch and font settings are already in `Outdoor/app_default.c
 ```powershell
 git clone https://github.com/someshsaraf/smart-door-bell.git
 cd smart-door-bell
-.\setup.ps1                        # once: SDK, its build tools, the doorbell's encryption key
-.\build.ps1 -Flash COM6            # build and flash (port: Device Manager › Ports); -Monitor shows its log
+.\setup.cmd                        # once: SDK, its build tools, the doorbell's encryption key
+# (setup.cmd / build.cmd work in cmd and PowerShell; the .ps1 scripts behind them only in PowerShell)
+.\build.cmd -Flash COM6            # build and flash (port: Device Manager › Ports); -Monitor shows its log
 ```
 
 The first build also downloads the T5 compiler and platform (a few GB, once). `setup.ps1` creates the encryption key

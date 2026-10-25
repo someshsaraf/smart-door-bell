@@ -23,15 +23,15 @@ firmware is tested with, so no separate SDK checkout is needed:
 ```powershell
 git clone https://github.com/someshsaraf/smart-door-bell.git
 cd smart-door-bell
-.\setup.ps1                 # once: fetches the SDK, installs its tools, creates the encryption key
+.\setup.cmd                 # once: fetches the SDK, installs its tools, creates the encryption key
 ```
 
 ## 2 · Build and flash
 
 ```powershell
-.\build.ps1                          # → Outdoor\dist\Outdoor_1.0.1\Outdoor_QIO_1.0.1.bin
-.\build.ps1 -Flash COM6              # build and flash (Device Manager › Ports shows the port)
-.\build.ps1 -Flash COM6 -Monitor     # ... and show the doorbell's log (Ctrl+C to stop)
+.\build.cmd                          # → Outdoor\dist\Outdoor_1.0.1\Outdoor_QIO_1.0.1.bin
+.\build.cmd -Flash COM6              # build and flash (Device Manager › Ports shows the port)
+.\build.cmd -Flash COM6 -Monitor     # ... and show the doorbell's log (Ctrl+C to stop)
 ```
 
 `build.ps1` prepares the SDK's environment by itself (no `export.ps1` per terminal). To use `tos.py` by
@@ -134,7 +134,7 @@ without them after flashing, set them again as in step 6. Useful log lines start
 | Symptom | Fix |
 |---|---|
 | `Not project root [...]` | Run `tos.py` from the `Outdoor` folder. |
-| `can't open file '...\tos.py'` | Use `.\build.ps1`; by hand, run `. .\export.ps1` in `sdk\TuyaOpen` first, then plain `tos.py`. |
+| `can't open file '...\tos.py'` | Use `.\build.cmd`; by hand, run `. .\export.ps1` in `sdk\TuyaOpen` first, then plain `tos.py`. |
 | Checkout or build fails with *Filename too long* (Windows) | `git config core.longpaths true` in both repositories. |
 | Flash cannot open the port | Close any open serial monitor; check the COM number; try another USB cable (data, not charge-only). |
 | Indoor Unit stays **Connecting… / Not reachable** | The Pi's firewall or Wi-Fi isolation blocks port 1883 — see the main [README](../README.md#-good-to-know). |
