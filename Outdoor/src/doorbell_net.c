@@ -66,8 +66,25 @@ static struct {
 
 /* Work asked for by the indoor unit, done on the next loop pass (not inside
  * the MQTT receive path, since joining a network drops the connection). */
-static bool remote_scan, remote_wifi, state_dirty;
-static char remote_ssid[NET_SSID_MAX + 1], remote_pswd[NET_PSWD_MAX + 1];
+static bool remote_scan, state_dirty;
+
+/*
+ * A network change asked for by the indoor unit: a new Wi-Fi and/or a new
+ * broker address, applied as one unit. Nothing is saved until the doorbell
+ * has joined the Wi-Fi AND reached the broker; if that does not happen within
+ * NET_CHANGE_MS it goes back to the previous network and broker, so a typo
+ * can never leave it unreachable.
+ */
+#define NET_CHANGE_MS 60000
+static struct {
+    bool requested, active, new_wifi;
+    bool wifi_up; /* the new Wi-Fi has connected (not just the old one still being up) */
+    char ssid[NET_SSID_MAX + 1], pswd[NET_PSWD_MAX + 1], broker[NET_HOST_MAX + 1];
+    uint32_t deadline;
+} change;
+static char change_result[12]; /* "applied" / "reverted": reported in the state */
+static void change_commit(void);
+static void change_revert(const char *why);
 
 static int sock = -1;
 static uint8_t rx[1024];
@@ -260,11 +277,16 @@ static void wifi_service(void)
             snprintf(st.ip, sizeof(st.ip), "%s", ip.nwipstr);
             tal_mutex_unlock(lock);
             PR_NOTICE("[NET] Wi-Fi up, ip %s", ip.nwipstr);
+            if (change.active)
+                change.wifi_up = true;
             mqtt_retry_at = now_ms();
             ntp_due_at = now_ms();
         } else if (ev == WFE_CONNECT_FAILED) {
             PR_NOTICE("[NET] Wi-Fi connect failed");
-            wifi_fail();
+            if (change.active && change.new_wifi)
+                change_revert("could not join the new Wi-Fi");
+            else
+                wifi_fail();
         } else if (ev == WFE_DISCONNECTED) {
             PR_NOTICE("[NET] Wi-Fi disconnected");
             tal_mutex_lock(lock);
@@ -280,7 +302,10 @@ static void wifi_service(void)
     tal_mutex_unlock(lock);
     if (w == NET_WIFI_CONNECTING && wifi_since && now_ms() - wifi_since > WIFI_CONNECT_MS) {
         PR_NOTICE("[NET] Wi-Fi connect timed out");
-        wifi_fail();
+        if (change.active && change.new_wifi)
+            change_revert("the new Wi-Fi did not connect in time");
+        else
+            wifi_fail();
     } else if (w != NET_WIFI_CONNECTED && saved_ssid[0] && wifi_retry_at && due(wifi_retry_at) &&
                !(w == NET_WIFI_CONNECTING && wifi_since)) {
         wifi_retry_at = 0;
@@ -442,6 +467,8 @@ static void publish_state(void)
     cJSON_AddNumberToObject(o, "chime", s->chime);
     cJSON_AddBoolToObject(o, "chime_repeat", s->chime_repeat);
     cJSON_AddNumberToObject(o, "volume", s->volume);
+    if (change_result[0])
+        cJSON_AddStringToObject(o, "network_change", change_result);
     cJSON_AddStringToObject(o, "wifi_ssid", st.ssid);
     cJSON_AddStringToObject(o, "ip", st.ip);
     cJSON_AddStringToObject(o, "broker", st.broker);
@@ -523,7 +550,7 @@ static void mqtt_open(const char *host)
         return;
     }
 
-    /* SUBSCRIBE to stop, ack and config at QoS 0 (the SUBACK is ignored in the loop). */
+    /* SUBSCRIBE to stop, ack, config, festival and talk at QoS 0 (the SUBACK is ignored in the loop). */
     b = 0;
     body[b++] = (uint8_t)(packet_id >> 8);
     body[b++] = (uint8_t)packet_id;
@@ -533,6 +560,10 @@ static void mqtt_open(const char *host)
     b += put_str(body + b, DOORBELL_TOPIC_ACK);
     body[b++] = 0;
     b += put_str(body + b, DOORBELL_TOPIC_CONFIG);
+    body[b++] = 0;
+    b += put_str(body + b, DOORBELL_TOPIC_FESTIVAL);
+    body[b++] = 0;
+    b += put_str(body + b, DOORBELL_TOPIC_TALK);
     body[b++] = 0;
     i = put_header(buf, 0x82, (uint32_t)b);
     memcpy(buf + i, body, b);
@@ -544,8 +575,60 @@ static void mqtt_open(const char *host)
     ping_sent = 0;
     set_mqtt_state(NET_MQTT_UP);
     PR_NOTICE("[NET] MQTT connected to %s", host);
+    if (change.active && (!change.new_wifi || change.wifi_up))
+        change_commit(); /* new Wi-Fi and broker both work */
     mqtt_publish_ex(DOORBELL_TOPIC_ONLINE, "online", true);
     publish_state();
+}
+
+/* ---------- network change from the indoor unit ---------- */
+
+static void change_begin(void)
+{
+    change.requested = false;
+    change.active = true;
+    change.wifi_up = false;
+    change.deadline = now_ms() + NET_CHANGE_MS;
+    if (!change.broker[0]) { /* Wi-Fi only: same broker */
+        tal_mutex_lock(lock);
+        strcpy(change.broker, st.broker);
+        tal_mutex_unlock(lock);
+    }
+    PR_NOTICE("[NET] network change: Wi-Fi %s%s%s, broker %s", change.new_wifi ? "'" : "",
+              change.new_wifi ? change.ssid : "unchanged", change.new_wifi ? "'" : "", change.broker);
+    if (sock >= 0)
+        mqtt_close();
+    mqtt_retry_at = now_ms();
+    if (change.new_wifi)
+        wifi_begin(change.ssid, change.pswd, false); /* saved only when the broker is reached too */
+}
+
+/* The new network works end to end: keep it. */
+static void change_commit(void)
+{
+    if (change.new_wifi)
+        save_wifi(); /* try_ssid / try_pswd: the network just joined */
+    tal_kv_set(KV_BROKER, (const uint8_t *)change.broker, strlen(change.broker));
+    tal_mutex_lock(lock);
+    snprintf(st.broker, sizeof(st.broker), "%s", change.broker);
+    tal_mutex_unlock(lock);
+    change.active = false;
+    strcpy(change_result, "applied");
+    PR_NOTICE("[NET] network change applied and saved");
+}
+
+/* It did not work: back to the saved Wi-Fi and broker. */
+static void change_revert(const char *why)
+{
+    PR_ERR("[NET] network change failed (%s): back to the previous network", why);
+    change.active = false;
+    strcpy(change_result, "reverted");
+    state_dirty = true;
+    if (sock >= 0)
+        mqtt_close();
+    mqtt_retry_at = now_ms();
+    if (change.new_wifi && saved_ssid[0])
+        wifi_begin(saved_ssid, saved_pswd, false);
 }
 
 /* A settings change from the indoor unit. Unknown or invalid fields are ignored. */
@@ -575,22 +658,71 @@ static void handle_config(const char *json)
         st.remote_seq++;
         tal_mutex_unlock(lock);
     }
-    if (cJSON_IsObject(wifi)) {
-        const cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid"), *pw = cJSON_GetObjectItem(wifi, "password");
+    /* Network change: {"network":{"ssid","password","broker"}}, any of them optional.
+     * The older separate "wifi" object and "broker" string take the same safe path. */
+    const cJSON *net = cJSON_GetObjectItem(j, "network");
+    const cJSON *w = cJSON_IsObject(net) ? net : cJSON_IsObject(wifi) ? wifi : NULL;
+    const cJSON *ssid = w ? cJSON_GetObjectItem(w, "ssid") : NULL, *pw = w ? cJSON_GetObjectItem(w, "password") : NULL;
+    const cJSON *host = cJSON_IsObject(net) ? cJSON_GetObjectItem(net, "broker") : broker;
+    bool has_ssid = cJSON_IsString(ssid) && ssid->valuestring[0];
+    bool has_host = cJSON_IsString(host) && host->valuestring[0];
+    if (has_ssid || has_host) {
         const char *p = cJSON_IsString(pw) ? pw->valuestring : "";
-        if (cJSON_IsString(ssid) && ssid->valuestring[0] && strlen(ssid->valuestring) <= NET_SSID_MAX &&
-            strlen(p) <= NET_PSWD_MAX && (p[0] == '\0' || strlen(p) >= 8)) {
-            strcpy(remote_ssid, ssid->valuestring);
-            strcpy(remote_pswd, p);
-            remote_wifi = true;
+        if (change.active || change.requested) {
+            PR_ERR("[NET] network change ignored: another one is in progress");
+        } else if ((has_ssid && (strlen(ssid->valuestring) > NET_SSID_MAX || strlen(p) > NET_PSWD_MAX ||
+                                 (p[0] && strlen(p) < 8))) ||
+                   (has_host && strlen(host->valuestring) > NET_HOST_MAX)) {
+            PR_ERR("[NET] network change rejected: invalid SSID, password or address");
         } else {
-            PR_ERR("[NET] remote Wi-Fi settings rejected");
+            change.new_wifi = has_ssid;
+            snprintf(change.ssid, sizeof(change.ssid), "%s", has_ssid ? ssid->valuestring : "");
+            snprintf(change.pswd, sizeof(change.pswd), "%s", has_ssid ? p : "");
+            snprintf(change.broker, sizeof(change.broker), "%s", has_host ? host->valuestring : "");
+            change.requested = true; /* started on the next loop pass: joining a network drops this connection */
         }
     }
-    if (cJSON_IsString(broker) && broker->valuestring[0] && strlen(broker->valuestring) <= NET_HOST_MAX)
-        net_set_broker(broker->valuestring);
     if (cJSON_IsString(cmd) && strcmp(cmd->valuestring, "wifi_scan") == 0)
         remote_scan = true;
+    cJSON_Delete(j);
+}
+
+/* {"festival":"diwali"|"none","until":<UTC s>,"greeting":"...","tones":true} (retained). */
+static void handle_festival(const char *json)
+{
+    cJSON *j = cJSON_Parse(json);
+    if (!j)
+        return;
+    const cJSON *f = cJSON_GetObjectItem(j, "festival"), *until = cJSON_GetObjectItem(j, "until");
+    const cJSON *g = cJSON_GetObjectItem(j, "greeting"), *tones = cJSON_GetObjectItem(j, "tones");
+    const char *key = cJSON_IsString(f) && strcmp(f->valuestring, "none") ? f->valuestring : "";
+    tal_mutex_lock(lock);
+    snprintf(st.festival, sizeof(st.festival), "%s", key);
+    snprintf(st.festival_greeting, sizeof(st.festival_greeting), "%s", cJSON_IsString(g) ? g->valuestring : "");
+    st.festival_until = cJSON_IsNumber(until) && until->valuedouble > 0 ? (uint32_t)until->valuedouble : 0;
+    st.festival_tones = !cJSON_IsBool(tones) || cJSON_IsTrue(tones);
+    st.festival_seq++;
+    tal_mutex_unlock(lock);
+    cJSON_Delete(j);
+}
+
+/* {"command":"start","host":"192.168.1.102","port":5004} or {"command":"end"} */
+static void handle_talk(const char *json)
+{
+    cJSON *j = cJSON_Parse(json);
+    if (!j)
+        return;
+    const cJSON *cmd = cJSON_GetObjectItem(j, "command"), *host = cJSON_GetObjectItem(j, "host");
+    const cJSON *port = cJSON_GetObjectItem(j, "port");
+    bool start = cJSON_IsString(cmd) && strcmp(cmd->valuestring, "start") == 0;
+    if (start || (cJSON_IsString(cmd) && strcmp(cmd->valuestring, "end") == 0)) {
+        tal_mutex_lock(lock);
+        st.talk_on = start;
+        snprintf(st.talk_host, sizeof(st.talk_host), "%s", cJSON_IsString(host) ? host->valuestring : "");
+        st.talk_port = cJSON_IsNumber(port) ? (uint16_t)port->valueint : 0;
+        st.talk_seq++;
+        tal_mutex_unlock(lock);
+    }
     cJSON_Delete(j);
 }
 
@@ -608,7 +740,25 @@ static void handle_publish(const uint8_t *p, uint32_t len, uint8_t flags)
         return;
     const uint8_t *topic = p + 2;
 
-    if (topic_is(topic, tlen, DOORBELL_TOPIC_CONFIG)) {
+    if (topic_is(topic, tlen, DOORBELL_TOPIC_TALK)) {
+        char payload[160];
+        uint32_t plen = len - 2 - tlen;
+        if (plen >= sizeof(payload))
+            return;
+        memcpy(payload, topic + tlen, plen);
+        payload[plen] = 0;
+        PR_NOTICE("[NET] <- talk %s", payload);
+        handle_talk(payload);
+    } else if (topic_is(topic, tlen, DOORBELL_TOPIC_FESTIVAL)) {
+        char payload[200];
+        uint32_t plen = len - 2 - tlen;
+        if (plen >= sizeof(payload))
+            return;
+        memcpy(payload, topic + tlen, plen);
+        payload[plen] = '\0';
+        PR_NOTICE("[NET] <- festival %s", payload);
+        handle_festival(payload);
+    } else if (topic_is(topic, tlen, DOORBELL_TOPIC_CONFIG)) {
         static char payload[sizeof(rx)];
         uint32_t plen = len - 2 - tlen;
         if (plen >= sizeof(payload))
@@ -745,11 +895,16 @@ static void net_thread(void *arg)
         net_wifi_state_t w = st.wifi;
         tal_mutex_unlock(lock);
 
-        if (remote_wifi) {
-            remote_wifi = false;
-            PR_NOTICE("[NET] joining '%s' as asked by the indoor unit", remote_ssid);
-            wifi_begin(remote_ssid, remote_pswd, true); /* saved only if it works; else back to the old one */
+        if (change.requested) {
+            change_begin();
+            tal_mutex_lock(lock);
+            w = st.wifi; /* "connecting" now if a new Wi-Fi is being joined */
+            tal_mutex_unlock(lock);
         }
+        if (change.active && due(change.deadline))
+            change_revert("the indoor unit was not reached in time");
+        if (change.active)
+            strcpy(host, change.broker); /* try the new broker; st.broker stays the saved one */
         if (remote_scan) {
             remote_scan = false;
             tal_mutex_lock(lock);

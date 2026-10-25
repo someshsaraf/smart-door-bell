@@ -11,6 +11,8 @@
 | Outdoor → Pi | `home/doorbell/outdoor/online` (retained) | `online` / `offline` | `offline` is the outdoor unit's MQTT last will, published by the broker if it drops off |
 | Pi → Outdoor | `home/doorbell/outdoor/config` | see below | Change outdoor settings |
 | Outdoor → Pi | `home/doorbell/outdoor/wifi_scan` | `{"networks":[{"ssid":"HomeNet","rssi":-48,"secure":true}]}` | Answer to a `wifi_scan` command |
+| Pi → Outdoor | `home/doorbell/talk` | `{"command":"start","host":"192.168.1.102","port":5004}` / `{"command":"end"}` | Intercom call. Audio then flows as raw 16 kHz mono 16-bit PCM in 20 ms UDP packets (640 bytes) both ways on port 5004; the doorbell answers to the address the audio comes from and hangs up by itself after 10 s without audio or 5 min |
+| Pi → Outdoor | `home/doorbell/festival` (retained) | `{"festival":"diwali","until":1794335400,"greeting":"Happy Diwali","tones":true}` | Festival theme running now: `diwali`, `christmas`, `new_year` or `none`. `until` is the end in UTC seconds; the doorbell reverts by itself when its clock passes it. `tones` false keeps the user's chime. Republished whenever it changes and on every reconnect |
 
 ## Outdoor settings from the Pi
 
@@ -26,8 +28,8 @@ Any subset of these fields in one `home/doorbell/outdoor/config` message:
 | `chime_repeat` | `false` once per press, `true` for the whole ring | The repeating chime stops when the ring ends or is stopped |
 | `volume` | `0`–`100` (the doorbell offers Quiet `40`, Normal `70`, Loud `100`) | Doorbell speaker volume |
 | `ring_seconds` | `10`, `15`, `30`, `45`, `60` | Ring duration sent with each start |
-| `wifi` | `{"ssid":"...","password":"..."}` | Joins that network; saved only if it connects, otherwise it returns to the saved one |
-| `broker` | `"192.168.2.134"` | New MQTT broker address (saved). A wrong value cuts the link; fix it on the doorbell |
+| `network` | `{"ssid":"...","password":"...","broker":"192.168.1.102"}` (each optional) | New Wi-Fi and/or indoor unit address, **applied as one change**: saved only if the doorbell joins the Wi-Fi *and* reaches the broker within 60 s, otherwise it returns to its previous Wi-Fi and address. The result appears in the state as `"network_change": "applied"` or `"reverted"` |
+| `wifi`, `broker` | `{"ssid","password"}` / `"192.168.1.102"` | Older separate forms; handled exactly like `network` |
 | `command` | `"wifi_scan"` | Scans and answers on `home/doorbell/outdoor/wifi_scan` |
 
 The outdoor unit saves every change, so it survives a restart. The Wi-Fi password

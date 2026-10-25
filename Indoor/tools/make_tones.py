@@ -273,6 +273,44 @@ def cuckoo_clock():
         t.add(i * 0.6, cuckoo(note_freq("D6"))); t.add(i * 0.6 + 0.24, cuckoo(note_freq("A#5")))
     return t.buf
 
+# festive: traditional tunes in the public domain ------------------------
+
+def sleigh_bells(seconds=0.25, rng=None):
+    """A shake of small jingle bells: bright inharmonic tinkles with noise."""
+    rng = rng or random.Random(11)
+    out = [0.0] * int(seconds * RATE)
+    for _ in range(6):
+        f, s0 = rng.uniform(3000, 6000), int(rng.uniform(0, 0.06) * RATE)
+        for i in range(len(out) - s0):
+            out[s0 + i] += math.sin(TAU * f * i / RATE) * math.exp(-i / (0.04 * RATE)) * 0.25
+    return out
+
+def jingle_bells():
+    """'Jingle bells, jingle bells, jingle all the way' (J. Pierpont, 1857)."""
+    t = Track(6.0)
+    q = 0.28
+    tune = [("E5", 1), ("E5", 1), ("E5", 2), ("E5", 1), ("E5", 1), ("E5", 2),
+            ("E5", 1), ("G5", 1), ("C5", 1.5), ("D5", 0.5), ("E5", 4)]
+    s = 0.0
+    for n, beats in tune:
+        t.add(s, render([(0.0, n, 1.0)], CHIME, min(1.6, beats * q + 0.8)), 0.9)
+        s += beats * q
+    for i in range(int(s / (2 * q)) + 1):  # sleigh bells on every other beat
+        t.add(i * 2 * q, sleigh_bells(), 0.5)
+    return t.buf
+
+def auld_lang_syne():
+    """'Should auld acquaintance be forgot' (traditional Scottish)."""
+    t = Track(7.6)
+    q = 0.36
+    tune = [("G4", 1), ("C5", 1.5), ("C5", 0.5), ("C5", 1), ("E5", 1), ("D5", 1.5), ("C5", 0.5), ("D5", 1),
+            ("E5", 0.5), ("D5", 0.5), ("C5", 1.5), ("C5", 0.5), ("E5", 1), ("G5", 1), ("A5", 3)]
+    s = 0.0
+    for n, beats in tune:
+        t.add(s, render([(0.0, n, 1.0)], CHIME, min(1.8, beats * q + 0.9)), 0.9)
+        s += beats * q
+    return t.buf
+
 # file name: (display name, category, generator)
 TONES = {
     "ding_dong.wav": ("Ding Dong", "Chimes", lambda: render([(0.0, "E5", 1.0), (0.55, "C5", 1.0)], CHIME, 2.6)),
@@ -293,6 +331,8 @@ TONES = {
     "rubber_duck.wav": ("Rubber Duck", "Funny", rubber_duck),
     "kazoo_tada.wav": ("Kazoo Ta-Da", "Funny", kazoo_tada),
     "cuckoo_clock.wav": ("Cuckoo Clock", "Funny", cuckoo_clock),
+    "jingle_bells.wav": ("Jingle Bells", "Festive", jingle_bells),
+    "auld_lang_syne.wav": ("Auld Lang Syne", "Festive", auld_lang_syne),
 }
 
 def save(name, samples):

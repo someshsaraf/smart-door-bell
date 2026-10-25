@@ -86,6 +86,8 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🌌 **Aurora glow** — soft magenta, cyan and violet light drifting behind the bell; it speeds up and brightens while ringing (on/off under Appearance)
 - ⏱️ **Ring duration** — 10 / 15 / 30 / 45 / 60 s
 - 📨 **Reliable ring delivery** — every press carries an `event_id`; resent every 2 s until the indoor unit acknowledges it
+- 🎙️ **Intercom (trial)** — talk with the visitor through the doorbell's microphone and speaker (echo-cancelled), opened from the dashboard
+- 🪔 **Festival themes** — Diwali, Christmas and New Year dress the doorbell up by themselves (see below)
 - 🔄 **Remote settings** — everything above can also be changed from the indoor dashboard
 - 💾 Settings survive restarts (encrypted on-board key–value storage)
 
@@ -108,8 +110,11 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
 - 🚪 **Visitor alert** — live VIGI camera feed (RTSP), countdown and a big **STOP** that also returns the doorbell to its main screen
-- 🔊 **14 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
+- 🔊 **16 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor), festive (Jingle Bells, Auld Lang Syne) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
+- 🎙️ **Two-way talk (trial, off by default: Settings → Speaker)** — **Talk** on the visitor screen, or any time from the **Front door** tile (live camera + intercom). The Bluetooth speaker switches to its hands-free microphone for the call and back to full-quality playback afterwards
+- 📱 **Phone notifications** — a push alert on every ring through the free [ntfy](https://ntfy.sh) app, no account needed: subscribe to the topic shown under **Settings → Phone** (own server: `sudo bash Indoor/tools/setup_ntfy.sh` installs ntfy on the Pi with logins, then set `"notify": {"server": "...", "token": "tk_..."}` in `config.json`)
 - 📋 **Recent events** — the last rings at a glance
+- 🪔 **Festival themes** — sparks, snow or confetti and a greeting during festivals (see below)
 - 🚀 **Starts at boot** — restarts itself if it ever crashes
 
 ### ⚙️ Settings
@@ -132,6 +137,25 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 <td align="center"><b>Outdoor unit</b> — configure the doorbell from the wall</td>
 </tr>
 </table>
+
+---
+
+## 🪔 Festival themes
+
+Around festivals both units switch to a festive look by themselves and return to your own settings afterwards.
+The dashboard keeps the calendar and tells the doorbell (retained MQTT message), so the doorbell needs no
+calendar of its own and still reverts on time by its own clock if the dashboard is off.
+
+| Festival | When | Doorbell | Dashboard | Tones |
+|---|---|---|---|---|
+| Diwali | 2 days before to 2 days after | Golden temple bell on maroon, orange and gold glow | Golden sparks rising | Temple bell strikes · shehnai |
+| Christmas | 23 – 27 December | Golden twin bells on deep green, red and green glow | Snowfall | Jingle Bells |
+| New Year | 1 – 2 January | Gold bell on midnight blue, gold and magenta glow | Confetti | Auld Lang Syne |
+
+On the dashboard the wallpaper changes too (diyas and string lights, a snowy night with a lit tree, fireworks over a skyline; put your own pictures in `Indoor/assets/festivals/diwali/`, `christmas/` or `new_year/` to use them instead) and every page, Settings included, takes the festival colours. The doorbell's date line alternates with the greeting (*Happy Diwali*, *Happy New Year 2027*…).
+**Settings → Festivals** on the dashboard turns the themes and the festive tones on or off, lists the next dates
+and lets you try each look for a minute. The doorbell has the same switches on its own **Festivals** settings page (festive look, festive chime, try a look for a minute). Diwali follows the lunar calendar: dates up to 2030 are built in
+(`Indoor/festivals.py`); add later years in `config.json` as `"festivals": {"diwali": {"2031": "2031-11-14"}}`.
 
 ---
 
@@ -208,6 +232,8 @@ the dashboard's **⚙ Settings → Outdoor unit**.
 | `home/doorbell/outdoor/online` | outdoor → indoor (retained) | `online` / `offline` (last will) |
 | `home/doorbell/outdoor/config` | indoor → outdoor | Change doorbell settings |
 | `home/doorbell/outdoor/wifi_scan` | outdoor → indoor | Networks the doorbell can see |
+| `home/doorbell/festival` | indoor → outdoor (retained) | Festival theme running now |
+| `home/doorbell/talk` | indoor → outdoor | Intercom call start / end (audio: UDP 5004) |
 
 Payloads and rules: **[Indoor/topics.md](Indoor/topics.md)**.
 

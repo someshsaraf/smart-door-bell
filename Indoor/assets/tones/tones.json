@@ -54,5 +54,13 @@
   "cuckoo_clock.wav": {
     "name": "Cuckoo Clock",
     "category": "Funny"
+  },
+  "jingle_bells.wav": {
+    "name": "Jingle Bells",
+    "category": "Festive"
+  },
+  "auld_lang_syne.wav": {
+    "name": "Auld Lang Syne",
+    "category": "Festive"
   }
 }

@@ -27,6 +27,7 @@
 #include "board_com_api.h"
 #include "doorbell_net.h"
 #include "doorbell_sound.h"
+#include "doorbell_talk.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +45,7 @@
 #define KV_UI       "db_ui"
 
 /* Settings pages are consecutive so prev/next is just -1/+1. */
-typedef enum { HOME, WIFI, APPEARANCE, BELL, SOUND, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
+typedef enum { HOME, WIFI, APPEARANCE, BELL, SOUND, FESTIVAL, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
 #define FIRST_SETTING WIFI
 #define LAST_SETTING  CONTROLLER
 
@@ -103,6 +104,68 @@ static const struct {
 #define VOLUME_COUNT (sizeof(volumes) / sizeof(volumes[0]))
 static uint8_t chime_volume = 70;
 
+/*
+ * Festival themes, chosen by the indoor unit's calendar (topic
+ * home/doorbell/festival). They only change what is shown and played: the
+ * user's own settings above stay as they are, are still edited on the
+ * settings pages, and come back when the festival ends.
+ */
+typedef struct {
+    const char *key;      /* as sent by the indoor unit */
+    const char *greeting; /* when tried on the Festivals page; the indoor unit sends its own */
+    theme_t theme;
+    uint32_t bell_color, style, chime;
+    uint32_t glow[3];
+} festival_t;
+static const festival_t festivals[] = {
+    {"diwali", "Happy Diwali",
+     {"Diwali", 0x4A0E12, 0x000000, 0xFFF1D6, 0xD9A86B, 0x3A1416, 0x6A2A22, 0x52201C, 0xFFB43A, 0x2A1200, 1, 170},
+     0xE8B23A, STYLE_TEMPLE, CHIME_TEMPLE_GHANTI, {0xFF8A1E, 0xFFC93C, 0xFF3D7F}},
+    {"christmas", "Merry Christmas",
+     {"Christmas", 0x0F3B24, 0x000000, 0xF4FBF6, 0xA9C9B4, 0x15402A, 0x2B6A46, 0x1E5236, 0xE23B3B, 0xFFFFFF, 1, 150},
+     0xD4A537, STYLE_TWIN, CHIME_JINGLE_BELLS, {0xFF3030, 0x2EE66B, 0xFFD54A}},
+    {"new_year", "Happy New Year",
+     {"New Year", 0x101B4A, 0x000000, 0xF2F5FF, 0xA3AED6, 0x18245A, 0x2F3F85, 0x223070, 0xFFD54A, 0x1A1400, 1, 160},
+     0xD4A537, STYLE_CLASSIC, CHIME_AULD_LANG_SYNE, {0xFFD54A, 0xFF3DCB, 0x2EE6FF}},
+};
+#define FESTIVAL_COUNT (sizeof(festivals) / sizeof(festivals[0]))
+static const festival_t *fest;            /* running now, NULL outside festivals */
+static bool fest_tones;                   /* play the festival chime instead of the user's */
+static uint32_t loaded_chime = CHIME_ALL; /* the chime the sound module has ready */
+/* Festivals page, saved: follow the indoor unit's festivals at all, and play their chimes. */
+static bool fest_look_on = true, fest_chime_on = true;
+static const festival_t *fest_trial; /* tried on the Festivals page, until fest_trial_end */
+static uint32_t fest_trial_end;
+#define FEST_TRIAL_MS 60000
+
+/* What is shown and played: the festival look while one runs, else the user's settings. */
+static const theme_t *cur_theme(void)
+{
+    return fest ? &fest->theme : &themes[theme_idx];
+}
+
+static uint32_t cur_bell_color(void)
+{
+    return fest ? fest->bell_color : bell_colors[bell_idx].color;
+}
+
+static uint32_t cur_style(void)
+{
+    return fest ? fest->style : bell_style;
+}
+
+static uint32_t ring_chime(void)
+{
+    return fest && fest_tones ? fest->chime : chime_idx;
+}
+
+static void use_chime(uint32_t c)
+{
+    if (c != loaded_chime)
+        sound_set_chime(c);
+    loaded_chime = c;
+}
+
 static page_t page = HOME;
 static lv_obj_t *pages[PAGE_COUNT];
 static lv_timer_t *ring_timer;
@@ -131,6 +194,7 @@ static lv_obj_t *style_cards[STYLE_COUNT];
 static lv_obj_t *style_thumbs[STYLE_COUNT];
 static lv_obj_t *chime_cards[CHIME_COUNT];
 static lv_obj_t *repeat_cards[2];
+static lv_obj_t *fest_look_cards[2], *fest_chime_cards[2], *fest_now;
 static lv_obj_t *volume_cards[VOLUME_COUNT];
 static lv_obj_t *duration_btns[DURATION_COUNT];
 
@@ -165,8 +229,9 @@ static void report_settings(void)
 
 static void save_config(void)
 {
-    uint8_t v[8] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style,
-                    (uint8_t)glow_on,   (uint8_t)chime_idx, (uint8_t)chime_repeat, chime_volume};
+    uint8_t v[10] = {(uint8_t)theme_idx, (uint8_t)bell_idx,   (uint8_t)ring_seconds, (uint8_t)bell_style,
+                     (uint8_t)glow_on,   (uint8_t)chime_idx,  (uint8_t)chime_repeat, chime_volume,
+                     (uint8_t)fest_look_on, (uint8_t)fest_chime_on};
     if (tal_kv_set(KV_UI, v, sizeof(v)) != OPRT_OK)
         PR_ERR("[DOORBELL] saving settings failed");
     report_settings();
@@ -187,6 +252,10 @@ static void load_config(void)
             chime_idx = v[5];
             chime_repeat = v[6] != 0;
             chime_volume = v[7];
+        }
+        if (len >= 10) {
+            fest_look_on = v[8] != 0;
+            fest_chime_on = v[9] != 0;
         }
         theme_idx = v[0];
         bell_idx = v[1];
@@ -675,13 +744,13 @@ static void init_dsc(lv_image_dsc_t *dsc, uint8_t **buf, int w, int h)
  */
 static void update_bell_art(bool thumbs)
 {
-    uint32_t color = bell_colors[bell_idx].color;
+    uint32_t color = cur_bell_color();
 
-    if (bell_style == STYLE_BUTTON) {
+    if (cur_style() == STYLE_BUTTON) {
         render_button(color);
         lv_image_cache_drop(&btn_dsc);
     } else {
-        render_shape(bell_style, color, classic_buf, CLASSIC_W, CLASSIC_H, 1.0f);
+        render_shape(cur_style(), color, classic_buf, CLASSIC_W, CLASSIC_H, 1.0f);
         lv_image_cache_drop(&classic_dsc);
     }
     if (btn_img)
@@ -689,6 +758,7 @@ static void update_bell_art(bool thumbs)
     if (bell_img)
         lv_obj_invalidate(bell_img);
 
+    color = bell_colors[bell_idx].color; /* the Bell page shows the user's own choice */
     for (uint32_t s = 0; thumbs && s < STYLE_COUNT; s++) {
         if (s == STYLE_BUTTON)
             render_button_thumb(color, thumb_buf[s], THUMB);
@@ -716,7 +786,7 @@ static void init_bell_art(void)
 
 static void apply_theme(void)
 {
-    const theme_t *t = &themes[theme_idx];
+    const theme_t *t = cur_theme();
 
     lv_style_set_bg_color(&st_screen, lv_color_hex(t->bg_top));
     lv_style_set_bg_grad_color(&st_screen, lv_color_hex(t->bg_bottom));
@@ -732,8 +802,8 @@ static void apply_theme(void)
     lv_style_set_bg_color(&st_accent, lv_color_hex(t->accent));
     lv_style_set_text_color(&st_accent, lv_color_hex(t->on_accent));
     lv_style_set_bg_color(&st_accent_pressed, lv_color_darken(lv_color_hex(t->accent), LV_OPA_20));
-    lv_style_set_arc_color(&st_wave, lv_color_hex(bell_colors[bell_idx].color));
-    lv_style_set_border_color(&st_halo, lv_color_hex(bell_colors[bell_idx].color));
+    lv_style_set_arc_color(&st_wave, lv_color_hex(cur_bell_color()));
+    lv_style_set_border_color(&st_halo, lv_color_hex(cur_bell_color()));
     lv_style_set_arc_color(&st_progress, lv_color_hex(t->accent));
     lv_style_set_bg_color(&st_dot, lv_color_hex(t->muted));
     lv_style_set_outline_color(&st_swatch_checked, lv_color_hex(t->text));
@@ -992,6 +1062,18 @@ static void refresh_values(void)
             best = i;
     for (uint32_t i = 0; i < VOLUME_COUNT; i++)
         lv_obj_set_state(volume_cards[i], LV_STATE_CHECKED, i == best);
+    for (uint32_t i = 0; i < 2; i++) {
+        lv_obj_set_state(fest_look_cards[i], LV_STATE_CHECKED, (i == 0) == fest_look_on);
+        lv_obj_set_state(fest_chime_cards[i], LV_STATE_CHECKED, (i == 0) == fest_chime_on);
+    }
+    if (fest_trial)
+        lv_label_set_text_fmt(fest_now, "Trying %s for a minute", fest_trial->theme.name);
+    else if (fest)
+        lv_label_set_text_fmt(fest_now, "Now: %s", fest->theme.name);
+    else if (ns.festival[0] && !fest_look_on)
+        lv_label_set_text(fest_now, "Festival now, festive look off");
+    else
+        lv_label_set_text(fest_now, "No festival now");
     lv_label_set_text(lv_obj_get_child(glow_card, 0), glow_on ? LV_SYMBOL_EYE_OPEN "  Glow: Aurora" : "Glow: Off");
     for (uint32_t i = 0; i < DURATION_COUNT; i++)
         lv_obj_set_state(duration_btns[i], LV_STATE_CHECKED, durations[i] == ring_seconds);
@@ -1062,7 +1144,7 @@ static void glow_tick(lv_timer_t *t)
         float y = BTN_CY + 70.0f * sinf(a * (i == 1 ? 2.0f : 1.0f)); /* cyan loops twice as often */
         float k = (0.62f + 0.38f * sinf(2.0f * a + i)) * boost;   /* breathing */
         lv_obj_set_pos(glow_blobs[i], (int32_t)x - GLOW_SIZE / 2, (int32_t)y - GLOW_SIZE / 2);
-        lv_obj_set_style_image_opa(glow_blobs[i], (lv_opa_t)fminf(255.0f, themes[theme_idx].glow * k), LV_PART_MAIN);
+        lv_obj_set_style_image_opa(glow_blobs[i], (lv_opa_t)fminf(255.0f, cur_theme()->glow * k), LV_PART_MAIN);
     }
 }
 
@@ -1109,7 +1191,7 @@ static void set_halo(bool run)
 /* Arranges the home screen for the current bell style (art must be rendered). */
 static void apply_bell_style(void)
 {
-    bool button = bell_style == STYLE_BUTTON;
+    bool button = cur_style() == STYLE_BUTTON;
     int32_t cy = button ? BTN_CY : CLASSIC_CY;
 
     if (button) {
@@ -1120,7 +1202,7 @@ static void apply_bell_style(void)
     } else {
         lv_obj_add_flag(btn_img, LV_OBJ_FLAG_HIDDEN);
         lv_image_set_src(bell_img, &classic_dsc);
-        lv_image_set_pivot(bell_img, CLASSIC_W / 2, (int32_t)style_pivot_y[bell_style]);
+        lv_image_set_pivot(bell_img, CLASSIC_W / 2, (int32_t)style_pivot_y[cur_style()]);
         lv_obj_align(bell_img, LV_ALIGN_TOP_MID, 0, CLASSIC_Y);
     }
     for (uint32_t i = 0; i < 4; i++)
@@ -1135,7 +1217,7 @@ static void set_ring_animation(bool run)
 {
     lv_anim_t a;
 
-    set_halo(!run && bell_style == STYLE_BUTTON); /* the sound waves take over while ringing */
+    set_halo(!run && cur_style() == STYLE_BUTTON); /* the sound waves take over while ringing */
     apply_glow();                                 /* faster and brighter while ringing */
 
     lv_anim_delete(bell_img, swing_cb);
@@ -1207,11 +1289,14 @@ static void start_ring(void)
         return; /* repeated presses by a visitor do not restart or cancel it */
     is_ringing = true;
     net_publish_start(ring_seconds);
+    use_chime(ring_chime());  /* a Sound page preview may have loaded another */
     sound_play(chime_repeat); /* the visitor hears that it rang */
     set_ring_animation(true);
     ring_timer = lv_timer_create(timeout_cb, ring_seconds * 1000, NULL);
     lv_timer_set_repeat_count(ring_timer, 1);
 }
+
+static int clock_shown = -1; /* minute of the day on screen, x2, +1 while the greeting shows */
 
 /* Local time once NTP has set the system clock; placeholders until then. */
 static void update_clock(void)
@@ -1219,19 +1304,26 @@ static void update_clock(void)
     static const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
     static const char *const months[] = {"January", "February", "March",     "April",   "May",      "June",
                                          "July",    "August",   "September", "October", "November", "December"};
-    static int shown = -1; /* minute of the day on screen */
 
     if (!ns.time_synced)
         return;
     TIME_T t = tal_time_get_posix() + DOORBELL_UTC_OFFSET_S;
     POSIX_TM_S tm;
     tal_time_gmtime_r(&t, &tm);
-    if (tm.tm_hour * 60 + tm.tm_min == shown)
+    const char *text = fest && !fest_trial && ns.festival_greeting[0] ? ns.festival_greeting : fest ? fest->greeting : "";
+    if (talk_active())
+        text = LV_SYMBOL_AUDIO "  Talking to indoor unit";
+    bool greet = text[0] && (talk_active() || (t / 5) % 2 == 0); /* 5 s greeting, 5 s date; a call stays */
+    int now = (tm.tm_hour * 60 + tm.tm_min) * 2 + greet;
+    if (now == clock_shown)
         return;
-    shown = tm.tm_hour * 60 + tm.tm_min;
+    clock_shown = now;
     int h12 = tm.tm_hour % 12 ? tm.tm_hour % 12 : 12;
     lv_label_set_text_fmt(home_clock, "%d:%02d %s", h12, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
-    lv_label_set_text_fmt(home_date, "%s, %d %s", days[tm.tm_wday % 7], tm.tm_mday, months[tm.tm_mon % 12]);
+    if (greet)
+        lv_label_set_text(home_date, text);
+    else
+        lv_label_set_text_fmt(home_date, "%s, %d %s", days[tm.tm_wday % 7], tm.tm_mday, months[tm.tm_mon % 12]);
 }
 
 /* Settings changed from the indoor unit: same effect as tapping them here. */
@@ -1258,7 +1350,7 @@ static void apply_remote_settings(void)
         glow_on = ns.remote_glow != 0;
     if (ns.remote_chime >= 0 && (uint32_t)ns.remote_chime < CHIME_COUNT && (uint32_t)ns.remote_chime != chime_idx) {
         chime_idx = ns.remote_chime;
-        sound_set_chime(chime_idx);
+        use_chime(ring_chime());
     }
     if (ns.remote_repeat >= 0)
         chime_repeat = ns.remote_repeat != 0;
@@ -1279,10 +1371,45 @@ static void apply_remote_settings(void)
     save_config();
 }
 
+/* Switches between the festival look and the user's own when the indoor unit
+ * says so, or when the festival's end time passes on our clock. */
+static void check_festival(void)
+{
+    const festival_t *want = NULL;
+    bool over = ns.festival_until && ns.time_synced && (uint32_t)tal_time_get_posix() >= ns.festival_until;
+    for (uint32_t i = 0; fest_look_on && ns.festival[0] && !over && i < FESTIVAL_COUNT; i++)
+        if (strcmp(ns.festival, festivals[i].key) == 0)
+            want = &festivals[i];
+    if (fest_trial && (int32_t)(lv_tick_get() - fest_trial_end) >= 0) {
+        fest_trial = NULL;
+        refresh_values();
+    }
+    if (fest_trial)
+        want = fest_trial;
+    bool tones = want && fest_chime_on && (fest_trial || ns.festival_tones);
+    if (want == fest && tones == fest_tones)
+        return;
+    PR_NOTICE("[DOORBELL] festival theme: %s", want ? want->key : "off");
+    fest = want;
+    fest_tones = tones;
+    if (!is_ringing) /* never cut the visitor's chime short */
+        use_chime(ring_chime());
+    for (int i = 0; i < 3; i++)
+        lv_obj_set_style_image_recolor(glow_blobs[i], lv_color_hex(fest ? fest->glow[i] : glow_colors[i]), LV_PART_MAIN);
+    update_bell_art(false);
+    apply_bell_style();
+    apply_theme();
+    apply_glow();
+    clock_shown = -1;
+    update_clock();
+    refresh_values();
+}
+
 /* Network status arrives from the net thread; picked up here on the LVGL thread. */
 static void net_poll_cb(lv_timer_t *t)
 {
     static net_status_t prev;
+    static bool prev_talk;
     (void)t;
     net_get_status(&ns);
     update_clock();
@@ -1293,6 +1420,18 @@ static void net_poll_cb(lv_timer_t *t)
     }
     if (ns.remote_seq != prev.remote_seq)
         apply_remote_settings();
+    check_festival();
+    if (ns.talk_seq != prev.talk_seq) {
+        if (ns.talk_on && ns.talk_host[0])
+            talk_start(ns.talk_host, ns.talk_port);
+        else
+            talk_stop();
+    }
+    if (talk_active() != prev_talk) { /* the date line says so while a call lasts */
+        prev_talk = talk_active();
+        clock_shown = -1;
+        update_clock();
+    }
     if (ns.scan_seq != prev.scan_seq || ns.scanning != prev.scanning)
         rebuild_ap_list();
     if (memcmp(&ns, &prev, sizeof(ns)) != 0)
@@ -1388,10 +1527,38 @@ static void swatch_cb(lv_event_t *e)
 static void chime_cb(lv_event_t *e)
 {
     chime_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
-    sound_set_chime(chime_idx);
+    use_chime(chime_idx); /* the next ring loads the festival chime again if one runs */
     sound_play(false);
     refresh_values();
     save_config();
+}
+
+/* Festivals page: the switches, and trying a look for a minute (also plays its chime). */
+static void fest_look_cb(lv_event_t *e)
+{
+    fest_look_on = (intptr_t)lv_event_get_user_data(e) == 0;
+    save_config();
+    check_festival();
+    refresh_values();
+}
+
+static void fest_chime_cb(lv_event_t *e)
+{
+    fest_chime_on = (intptr_t)lv_event_get_user_data(e) == 0;
+    save_config();
+    check_festival();
+    refresh_values();
+}
+
+static void fest_try_cb(lv_event_t *e)
+{
+    intptr_t i = (intptr_t)lv_event_get_user_data(e);
+    fest_trial = i < (intptr_t)FESTIVAL_COUNT ? &festivals[i] : NULL;
+    fest_trial_end = lv_tick_get() + FEST_TRIAL_MS;
+    check_festival();
+    refresh_values();
+    if (fest_trial && fest_tones && !is_ringing)
+        sound_play(false);
 }
 
 static void repeat_cb(lv_event_t *e)
@@ -1803,6 +1970,22 @@ static void create_sound_page(lv_obj_t *p)
         volume_cards[i] = sound_card(p, 86, ((int32_t)i - 1) * 92, 286, volumes[i].name, volume_cb, (intptr_t)i);
 }
 
+/* Festive look and chime switches, what runs now, and a one-minute trial of each look. */
+static void create_festival_page(lv_obj_t *p)
+{
+    add_settings_frame(p, FESTIVAL, "Festivals");
+    fest_look_cards[0] = sound_card(p, 130, -69, 78, "Festive look", fest_look_cb, 0);
+    fest_look_cards[1] = sound_card(p, 130, 69, 78, "My own look", fest_look_cb, 1);
+    fest_chime_cards[0] = sound_card(p, 130, -69, 118, "Festive chime", fest_chime_cb, 0);
+    fest_chime_cards[1] = sound_card(p, 130, 69, 118, "My own chime", fest_chime_cb, 1);
+    fest_now = add_text(p, &lv_font_montserrat_14, 166, "");
+    lv_obj_add_style(fest_now, &st_accent_text, LV_PART_MAIN);
+    add_muted(p, &lv_font_montserrat_14, 200, "Try for a minute");
+    for (uint32_t i = 0; i < FESTIVAL_COUNT; i++)
+        sound_card(p, 100, ((int32_t)i - 1) * 106, 220, festivals[i].theme.name, fest_try_cb, (intptr_t)i);
+    sound_card(p, 120, 0, 262, "Stop trying", fest_try_cb, (intptr_t)FESTIVAL_COUNT);
+}
+
 /* Bell style picker: 3 x 2 cards, each a thumbnail drawn in the current bell colour. */
 static void create_bell_page(lv_obj_t *p)
 {
@@ -1868,6 +2051,7 @@ static void create_ui(void)
     create_appearance(pages[APPEARANCE]);
     create_bell_page(pages[BELL]);
     create_sound_page(pages[SOUND]);
+    create_festival_page(pages[FESTIVAL]);
     create_duration(pages[DURATION]);
     create_status_page(pages[CONTROLLER], CONTROLLER, LV_SYMBOL_HOME, "Indoor Unit", &ctrl_view,
                        LV_SYMBOL_EDIT "  Set address", broker_cb);
@@ -1895,6 +2079,8 @@ void user_main(void)
     board_register_hardware();
     load_config();
     sound_init(chime_idx, chime_volume); /* after board_register_hardware() and the saved settings */
+    loaded_chime = chime_idx;
+    talk_init();
     net_start();
     report_settings();
 

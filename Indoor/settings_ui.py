@@ -3,6 +3,7 @@ outdoor unit's settings (applied over MQTT, see topics.md)."""
 import json, time
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize
+from festivals import FESTIVALS, upcoming
 from news import GENRES, REGIONS
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -33,6 +34,14 @@ def dot_icon(color, size=22):
     pm = QPixmap(size, size); pm.fill(Qt.transparent); p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing); p.setBrush(QColor(color)); p.setPen(QColor("#ffffff")); p.drawEllipse(1, 1, size - 2, size - 2); p.end()
     return QIcon(pm)
+
+def this_ip():
+    """This Pi's LAN address (the route to a public address; nothing is sent)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try: s.connect(("8.8.8.8", 80)); return s.getsockname()[0]
+    except OSError: return ""
+    finally: s.close()
 
 def touch_scroll(w):
     QScroller.grabGesture(w.viewport() if hasattr(w, "viewport") else w, QScroller.LeftMouseButtonGesture)
@@ -103,6 +112,13 @@ class SpeakerPanel(QWidget):
         lay.addLayout(row)
         self.msg = label("Put the speaker in pairing mode, then search. Choose it in the list and press Connect.", "secondary", True)
         lay.addWidget(self.msg)
+        # Two-way talk is still being tried out: off unless chosen here. While a call
+        # lasts, the speaker runs in its hands-free mode, so the bell tone stops.
+        lay.addWidget(label("TWO-WAY TALK WITH THE DOOR (TRIAL)", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        for value, text in ((False, "Off"), (True, "On: Talk button on the door screens")):
+            b = button(text, "choice", True, 56); b.setChecked(settings.get("intercom", False) == value); group.addButton(b); row.addWidget(b)
+            b.clicked.connect(lambda _=False, value=value: (self.settings.__setitem__("intercom", value), self.save()))
+        lay.addLayout(row)
         bt.devices.connect(self.show_devices); bt.status.connect(self.msg.setText); bt.output.connect(self.show_output)
         self.test_cb = None
     def show_devices(self, devs):
@@ -126,7 +142,7 @@ class SpeakerPanel(QWidget):
         self.bt.request("list"); super().showEvent(e)
 
 AUDIO_TYPES = (".wav", ".mp3", ".ogg")
-TONE_CATEGORIES = ["Chimes", "Bollywood style", "Funny", "My tones"]
+TONE_CATEGORIES = ["Chimes", "Bollywood style", "Festive", "Funny", "My tones"]
 
 def list_tones(folder):
     """[(category, display name, path relative to folder)]: generated tones from
@@ -197,6 +213,83 @@ class NewsPanel(QWidget):
         self.settings["news_genres"] = keys or ["top"]; self.save(); self.changed()
         self.msg.setText("Updating headlines…" if keys else "No genre chosen: showing top stories")
 
+class PhonePanel(QWidget):
+    """Push notifications to phones (ntfy app): on/off, the topic to subscribe to, a test."""
+    def __init__(self, settings, save, notifier):
+        super().__init__(); self.settings = settings; self.save = save; self.notifier = notifier
+        from notify import new_topic
+        if not settings.get("notify_topic"): settings["notify_topic"] = new_topic(); save()
+        self.new_topic = new_topic
+        lay = QVBoxLayout(self); lay.setSpacing(12)
+        lay.addWidget(label("Phone notifications", "sectionTitle"))
+        lay.addWidget(label("A push notification on your phone whenever someone rings. Install the free ntfy app "
+                            "(Play Store / App Store), tap +, and subscribe to the topic below. Anyone who knows the "
+                            "topic gets the alerts, so share it only with your family.", "secondary", True))
+        lay.addWidget(label("TOPIC TO SUBSCRIBE TO", "section"))
+        self.topic = label("", "topicName"); self.topic.setTextInteractionFlags(Qt.TextSelectableByMouse); lay.addWidget(self.topic)
+        self.server = label("", "secondary"); lay.addWidget(self.server)
+        lay.addWidget(label("NOTIFY WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        for value, text in ((True, "On"), (False, "Off")):
+            b = button(text, "choice", True, 64); b.setChecked(settings.get("notify", False) == value); group.addButton(b); row.addWidget(b)
+            b.clicked.connect(lambda _=False, value=value: self.set_on(value))
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        test = button("Send a test notification", h=64); test.clicked.connect(self.test); row.addWidget(test)
+        fresh = button("New topic (stops the old one)", h=64); fresh.clicked.connect(self.change_topic); row.addWidget(fresh)
+        lay.addLayout(row)
+        self.msg = label("", "secondary", True); lay.addWidget(self.msg); lay.addStretch()
+        notifier.result.connect(lambda ok, text: self.msg.setText(("✓ " if ok else "✗ ") + text))
+        self.show_topic()
+    def show_topic(self):
+        self.topic.setText(self.settings["notify_topic"])
+        self.server.setText(f"Server: {self.notifier.server}   ·   web: {self.notifier.topic_url()}")
+    def set_on(self, value):
+        self.settings["notify"] = value; self.save()
+        self.msg.setText("Rings will be sent to the topic above" if value else "No notifications are sent")
+    def test(self):
+        self.msg.setText("Sending…")
+        self.notifier.send("Doorbell test", "Notifications from the indoor unit work.", tags="white_check_mark",
+                           priority="default", force=True)
+    def change_topic(self):
+        self.settings["notify_topic"] = self.new_topic(); self.save(); self.show_topic()
+        self.msg.setText("New topic: subscribe to it again in the ntfy app")
+
+class FestivalPanel(QWidget):
+    """Festival themes: Diwali (2 days either side), Christmas (Dec 23-27) and
+    New Year (Jan 1-2) change the look of both units, and optionally the tones."""
+    LOOKS = {"diwali": "Golden temple bell, rising sparks, shehnai / temple bell tone",
+             "christmas": "Twin bells on green, snowfall, Jingle Bells",
+             "new_year": "Gold bell on midnight blue, confetti, Auld Lang Syne"}
+    def __init__(self, settings, save, changed, preview, extra=None):
+        super().__init__(); self.settings = settings; self.save = save; self.changed = changed; self.extra = extra
+        lay = QVBoxLayout(self); lay.setSpacing(12)
+        lay.addWidget(label("Festivals", "sectionTitle"))
+        lay.addWidget(label("Around festivals the dashboard and the doorbell switch to a festive theme by themselves "
+                            "and return to your own settings afterwards.", "secondary", True))
+        for title, key, texts in (("FESTIVE THEMES", "festival_themes", ("Automatic", "Off")),
+                                  ("FESTIVE BELL TONES", "festival_tones", ("On", "Off"))):
+            lay.addWidget(label(title, "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+            for value, text in zip((True, False), texts):
+                b = button(text, "choice", True, 64); b.setChecked(settings.get(key, True) == value); group.addButton(b); row.addWidget(b)
+                b.clicked.connect(lambda _=False, key=key, value=value: self.set(key, value))
+            lay.addLayout(row)
+        lay.addWidget(label("COMING UP", "section")); self.dates = label("", "secondary", True); lay.addWidget(self.dates)
+        lay.addWidget(label("TRY ONE FOR A MINUTE", "section")); row = QHBoxLayout()
+        for key, (name, _) in FESTIVALS.items():
+            b = button(name, "choice", h=64); b.clicked.connect(lambda _=False, key=key: preview(key)); row.addWidget(b)
+        b = button("Back to normal", "choice", h=64); b.clicked.connect(lambda: preview("")); row.addWidget(b)
+        lay.addLayout(row); lay.addStretch(); self.refresh()
+    def set(self, key, value):
+        self.settings[key] = value; self.save(); self.changed()
+    def refresh(self):
+        import datetime as dt
+        lines = []
+        for key, first, last in upcoming(dt.date.today(), self.extra):
+            lines.append(f"{FESTIVALS[key][0]}: {first:%a %d %b} – {last:%a %d %b %Y}  ·  {self.LOOKS[key]}")
+        self.dates.setText("\n".join(lines))
+    def showEvent(self, e):
+        super().showEvent(e); self.refresh()
+
 class OutdoorPanel(QWidget):
     """Mirrors the outdoor unit's own settings. Every change is sent at once; the
     buttons show what the outdoor unit reports back, so they are always true."""
@@ -229,19 +322,18 @@ class OutdoorPanel(QWidget):
         self.volume_btns = choice_row("CHIME VOLUME", [n for n, _ in OUTDOOR_VOLUMES], "volume", [v for _, v in OUTDOOR_VOLUMES])
         self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
 
-        lay.addWidget(label("WI-FI", "section"))
+        lay.addWidget(label("NETWORK (Wi-Fi and indoor unit address, changed together)", "section"))
         self.wifi_now = label("", "secondary"); lay.addWidget(self.wifi_now)
+        self.broker = label("", "secondary"); lay.addWidget(self.broker)
         row = QHBoxLayout(); scan = button("Scan networks"); scan.clicked.connect(self.scan)
-        join = button("Join selected network…"); join.clicked.connect(self.join); row.addWidget(scan); row.addWidget(join); lay.addLayout(row)
+        change = button("Change network…"); change.clicked.connect(self.change_network)
+        row.addWidget(scan); row.addWidget(change); lay.addLayout(row)
         self.wifi_list = QListWidget(); self.wifi_list.setObjectName("list"); self.wifi_list.setMinimumHeight(220); touch_scroll(self.wifi_list)
         lay.addWidget(self.wifi_list)
-        lay.addWidget(label("If the outdoor unit cannot join the new network it goes back to the one it has now.", "secondary", True))
-
-        lay.addWidget(label("INDOOR UNIT ADDRESS (MQTT broker)", "section"))
-        row = QHBoxLayout(); self.broker = label("", "secondary"); row.addWidget(self.broker, 1)
-        change = button("Change…"); change.setFixedWidth(200); change.clicked.connect(self.change_broker); row.addWidget(change); lay.addLayout(row)
-        lay.addWidget(label("Only change this when the Pi's address changes: with a wrong address the outdoor unit "
-                            "can no longer be reached from here and must be set on the doorbell itself.", "secondary", True))
+        lay.addWidget(label("Choose a network in the list to move the doorbell to it, or none to keep its Wi-Fi and only "
+                            "change the indoor unit address. Both are sent in one message: the doorbell keeps the new "
+                            "settings only if it joins the Wi-Fi and reaches the indoor unit within 60 s; otherwise it "
+                            "goes back to the old ones by itself.", "secondary", True))
         self.msg = label("", "status"); lay.addWidget(self.msg); lay.addStretch()
         self.refresh()
 
@@ -250,23 +342,36 @@ class OutdoorPanel(QWidget):
         else: self.msg.setText("Not sent: MQTT is not connected"); self.refresh()
     def scan(self):
         if self.send({"command": "wifi_scan"}): self.wifi_list.clear(); QListWidgetItem("Scanning…", self.wifi_list)
-    def join(self):
+    def change_network(self):
+        """Wi-Fi (the network chosen in the list, if any) + password + indoor unit address,
+        sent as one 'network' command so the doorbell switches everything at once."""
+        change = {}
         i = self.wifi_list.currentRow()
-        if not (0 <= i < len(self.networks)): self.msg.setText("Scan, then choose a network in the list first"); return
-        n = self.networks[i]; pw = ""
-        if n.get("secure", True):
-            pw = Keyboard.ask(self, f"Wi-Fi password for {n['ssid']}", password=True)
-            if pw is None: return
-            if len(pw) < 8: self.msg.setText("A Wi-Fi password has at least 8 characters"); return
-        if self.send({"wifi": {"ssid": n["ssid"], "password": pw}}):
-            self.msg.setText(f"Asked the outdoor unit to join {n['ssid']} · it reconnects in a few seconds")
-    def change_broker(self):
-        host = Keyboard.ask(self, "Indoor unit address (IP of this Pi)", self.state.get("broker", ""))
-        if host and host.strip() and self.send({"broker": host.strip()}): self.msg.setText(f"Outdoor unit will now use {host.strip()}")
+        if 0 <= i < len(self.networks):
+            n = self.networks[i]; pw = ""
+            if n.get("secure", True):
+                pw = Keyboard.ask(self, f"Wi-Fi password for {n['ssid']}", password=True)
+                if pw is None: return
+                if len(pw) < 8: self.msg.setText("A Wi-Fi password has at least 8 characters"); return
+            change.update(ssid=n["ssid"], password=pw)
+        current = self.state.get("broker", "")
+        host = Keyboard.ask(self, "Indoor unit address: this Pi's IP on the doorbell's network", current or this_ip())
+        if host is None: return
+        host = host.strip()
+        if host and host != current: change["broker"] = host
+        if not change: self.msg.setText("Nothing to change: choose a network in the list or enter a new address"); return
+        if self.send({"network": change}):
+            what = " and ".join(t for t in (f"Wi-Fi {change['ssid']}" if "ssid" in change else "",
+                                            f"address {change['broker']}" if "broker" in change else "") if t)
+            self.msg.setText(f"Sent: {what}. The doorbell confirms within 60 s, or returns to its old settings.")
 
     # ---- updates from MQTT ----
     def on_state(self, data):
-        self.state = data; self.msg.setText(""); self.refresh()
+        self.state = data; self.refresh()
+        result = data.get("network_change")
+        self.msg.setText({"applied": "Network change applied and saved on the doorbell",
+                          "reverted": "Network change failed: the doorbell went back to its previous Wi-Fi and address"}
+                         .get(result, ""))
     def on_online(self, online):
         self.online = online; self.refresh()
     def on_scan(self, data):
@@ -289,12 +394,14 @@ class OutdoorPanel(QWidget):
                                   (self.volume_btns, "volume", [v for _, v in OUTDOOR_VOLUMES]),
                                   (self.ring_btns, "ring_seconds", OUTDOOR_DURATIONS)]:
             for b, v in zip(btns, values): b.setChecked(s.get(key) == v)
-        self.wifi_now.setText(f"Connected to {s['wifi_ssid']} ({s.get('ip') or 'no address'})" if s.get("wifi_ssid") else "Not reported yet")
-        self.broker.setText(s.get("broker") or "Not reported yet")
+        self.wifi_now.setText(f"Wi-Fi: {s['wifi_ssid']} (doorbell IP {s.get('ip') or 'none'})" if s.get("wifi_ssid") else "Wi-Fi: not reported yet")
+        self.broker.setText(f"Indoor unit address: {s['broker']}" if s.get("broker") else "Indoor unit address: not reported yet")
 
 class SettingsPage(QFrame):
     back = Signal()
-    def __init__(self, bt, tones, settings, save, preview, send, news_changed):
+    festival_changed = Signal()
+    festival_preview = Signal(str)  # festival key to try for a minute, "" to end the trial
+    def __init__(self, bt, tones, settings, save, preview, send, news_changed, festival_extra=None, notifier=None):
         super().__init__(); self.setObjectName("settings")
         root = QVBoxLayout(self); root.setContentsMargins(24, 20, 24, 20); root.setSpacing(16)
         head = QHBoxLayout(); head.addWidget(label("Settings", "pageTitle")); head.addStretch()
@@ -303,9 +410,11 @@ class SettingsPage(QFrame):
         self.stack = QStackedWidget()
         self.speaker = SpeakerPanel(bt, settings, save); self.tone = TonePanel(tones, settings, save, preview); self.outdoor = OutdoorPanel(send)
         self.news = NewsPanel(settings, save, news_changed)
+        self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
+        self.phone = PhonePanel(settings, save, notifier)
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
-                                           ("Outdoor unit", self.outdoor)]):
+                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Outdoor unit", self.outdoor)]):
             panel_frame = QFrame(); panel_frame.setObjectName("panel"); QVBoxLayout(panel_frame).addWidget(panel); self.stack.addWidget(panel_frame)
             nb = button(text, "nav", True, 72); group.addButton(nb); nav.addWidget(nb)
             nb.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i)); nb.setChecked(i == 0)

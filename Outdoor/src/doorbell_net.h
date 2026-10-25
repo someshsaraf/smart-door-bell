@@ -18,6 +18,8 @@
 #define DOORBELL_TOPIC_ONLINE "home/doorbell/outdoor/online"    /* retained "online"/"offline" (last will) */
 #define DOORBELL_TOPIC_CONFIG "home/doorbell/outdoor/config"    /* indoor -> changes to apply */
 #define DOORBELL_TOPIC_SCAN   "home/doorbell/outdoor/wifi_scan" /* outdoor -> networks seen */
+#define DOORBELL_TOPIC_FESTIVAL "home/doorbell/festival"         /* indoor -> retained festival theme */
+#define DOORBELL_TOPIC_TALK     "home/doorbell/talk"             /* indoor -> intercom call start / end */
 #define DOORBELL_ACK_WAIT_MS  2000 /* resend the start if no ack within this */
 #define DOORBELL_START_RESENDS 3   /* resends after the first send */
 #define DOORBELL_MQTT_PORT    1883
@@ -61,6 +63,18 @@ typedef struct {
     uint32_t remote_seq;
     int32_t remote_theme, remote_bell, remote_ring, remote_style, remote_glow;
     int32_t remote_chime, remote_repeat, remote_volume;
+    /* Festival theme chosen by the indoor unit's calendar: bumps festival_seq.
+     * festival is "" outside festivals; it ends at festival_until (UTC seconds). */
+    uint32_t festival_seq;
+    char festival[16];
+    char festival_greeting[40];
+    uint32_t festival_until;
+    bool festival_tones;
+    /* Intercom command from the indoor unit: bumps talk_seq. */
+    uint32_t talk_seq;
+    bool talk_on;       /* start (true) or end */
+    char talk_host[16]; /* the indoor unit's address for the audio */
+    uint16_t talk_port;
 } net_status_t;
 
 /* Call once after tal_kv_init(); connects with the saved Wi-Fi if any. */
