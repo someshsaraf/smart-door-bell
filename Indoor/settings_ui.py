@@ -16,6 +16,8 @@ OUTDOOR_DURATIONS = [10, 15, 30, 45, 60]
 # bell_style numbers 0..5; pictures in assets/bells/<number>_*.png
 OUTDOOR_STYLES = ["Classic", "Push button", "Temple", "Hand bell", "Twin bells", "Flat"]
 BELL_ICONS = Path(__file__).resolve().parent / "assets" / "bells"
+OUTDOOR_CHIMES = ["Ding Dong", "Westminster", "Triple Chime", "Marimba", "Church Bell"]  # chime numbers 0..4
+OUTDOOR_VOLUMES = [("Quiet", 40), ("Normal", 70), ("Loud", 100)]
 
 def label(text, obj=None, wrap=False):
     w = QLabel(text); w.setWordWrap(wrap)
@@ -222,6 +224,9 @@ class OutdoorPanel(QWidget):
         icons = [next(BELL_ICONS.glob(f"{i}_*.png"), None) for i in range(len(OUTDOOR_STYLES))]
         self.style_btns = choice_row("BELL STYLE", OUTDOOR_STYLES, "bell_style", range(len(OUTDOOR_STYLES)), cols=3, icons=icons, h=84)
         self.glow_btns = choice_row("BACKGROUND GLOW", ["Off", "Aurora (magenta · cyan)"], "glow", [False, True])
+        self.chime_btns = choice_row("DOORBELL CHIME (its own speaker)", OUTDOOR_CHIMES, "chime", range(len(OUTDOOR_CHIMES)), cols=3)
+        self.repeat_btns = choice_row("CHIME PLAYS", ["Once per press", "For the whole ring"], "chime_repeat", [False, True])
+        self.volume_btns = choice_row("CHIME VOLUME", [n for n, _ in OUTDOOR_VOLUMES], "volume", [v for _, v in OUTDOOR_VOLUMES])
         self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
 
         lay.addWidget(label("WI-FI", "section"))
@@ -279,6 +284,9 @@ class OutdoorPanel(QWidget):
                                   (self.bell_btns, "bell_color", list(range(len(OUTDOOR_BELLS)))),
                                   (self.style_btns, "bell_style", list(range(len(OUTDOOR_STYLES)))),
                                   (self.glow_btns, "glow", [False, True]),
+                                  (self.chime_btns, "chime", list(range(len(OUTDOOR_CHIMES)))),
+                                  (self.repeat_btns, "chime_repeat", [False, True]),
+                                  (self.volume_btns, "volume", [v for _, v in OUTDOOR_VOLUMES]),
                                   (self.ring_btns, "ring_seconds", OUTDOOR_DURATIONS)]:
             for b, v in zip(btns, values): b.setChecked(s.get(key) == v)
         self.wifi_now.setText(f"Connected to {s['wifi_ssid']} ({s.get('ip') or 'no address'})" if s.get("wifi_ssid") else "Not reported yet")

@@ -44,8 +44,7 @@ static struct {
     uint32_t start_secs, start_at;
     char ssid[NET_SSID_MAX + 1], pswd[NET_PSWD_MAX + 1];
     bool report; /* UI settings below changed: republish the state */
-    uint32_t theme, bell_color, ring_seconds, bell_style;
-    bool glow;
+    net_settings_t settings;
 } req;
 static volatile int wifi_event = -1; /* last WF_EVENT_E from the driver, -1 = none */
 
@@ -434,11 +433,15 @@ static void publish_state(void)
 {
     cJSON *o = cJSON_CreateObject();
     tal_mutex_lock(lock);
-    cJSON_AddNumberToObject(o, "theme", req.theme);
-    cJSON_AddNumberToObject(o, "bell_color", req.bell_color);
-    cJSON_AddNumberToObject(o, "ring_seconds", req.ring_seconds);
-    cJSON_AddNumberToObject(o, "bell_style", req.bell_style);
-    cJSON_AddBoolToObject(o, "glow", req.glow);
+    const net_settings_t *s = &req.settings;
+    cJSON_AddNumberToObject(o, "theme", s->theme);
+    cJSON_AddNumberToObject(o, "bell_color", s->bell_color);
+    cJSON_AddNumberToObject(o, "ring_seconds", s->ring_seconds);
+    cJSON_AddNumberToObject(o, "bell_style", s->bell_style);
+    cJSON_AddBoolToObject(o, "glow", s->glow);
+    cJSON_AddNumberToObject(o, "chime", s->chime);
+    cJSON_AddBoolToObject(o, "chime_repeat", s->chime_repeat);
+    cJSON_AddNumberToObject(o, "volume", s->volume);
     cJSON_AddStringToObject(o, "wifi_ssid", st.ssid);
     cJSON_AddStringToObject(o, "ip", st.ip);
     cJSON_AddStringToObject(o, "broker", st.broker);
@@ -555,15 +558,20 @@ static void handle_config(const char *json)
     const cJSON *ring_s = cJSON_GetObjectItem(j, "ring_seconds"), *wifi = cJSON_GetObjectItem(j, "wifi");
     const cJSON *broker = cJSON_GetObjectItem(j, "broker"), *cmd = cJSON_GetObjectItem(j, "command");
     const cJSON *style = cJSON_GetObjectItem(j, "bell_style"), *glow = cJSON_GetObjectItem(j, "glow");
+    const cJSON *chime = cJSON_GetObjectItem(j, "chime"), *rep = cJSON_GetObjectItem(j, "chime_repeat");
+    const cJSON *vol = cJSON_GetObjectItem(j, "volume");
 
     if (cJSON_IsNumber(theme) || cJSON_IsNumber(bell) || cJSON_IsNumber(ring_s) || cJSON_IsNumber(style) ||
-        cJSON_IsBool(glow)) {
+        cJSON_IsBool(glow) || cJSON_IsNumber(chime) || cJSON_IsBool(rep) || cJSON_IsNumber(vol)) {
         tal_mutex_lock(lock);
         st.remote_theme = cJSON_IsNumber(theme) ? theme->valueint : -1;
         st.remote_bell = cJSON_IsNumber(bell) ? bell->valueint : -1;
         st.remote_ring = cJSON_IsNumber(ring_s) ? ring_s->valueint : -1;
         st.remote_style = cJSON_IsNumber(style) ? style->valueint : -1;
         st.remote_glow = cJSON_IsBool(glow) ? cJSON_IsTrue(glow) : -1;
+        st.remote_chime = cJSON_IsNumber(chime) ? chime->valueint : -1;
+        st.remote_repeat = cJSON_IsBool(rep) ? cJSON_IsTrue(rep) : -1;
+        st.remote_volume = cJSON_IsNumber(vol) ? vol->valueint : -1;
         st.remote_seq++;
         tal_mutex_unlock(lock);
     }
@@ -856,14 +864,10 @@ void net_publish_start(uint32_t seconds)
     tal_mutex_unlock(lock);
 }
 
-void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds, uint32_t bell_style, bool glow)
+void net_report_settings(const net_settings_t *s)
 {
     tal_mutex_lock(lock);
-    req.glow = glow;
-    req.theme = theme;
-    req.bell_color = bell_color;
-    req.ring_seconds = ring_seconds;
-    req.bell_style = bell_style;
+    req.settings = *s;
     req.report = true;
     tal_mutex_unlock(lock);
 }

@@ -77,7 +77,8 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🔔 **Tap to ring** — the bell swings with pulsing sound waves; drawn on the device at full resolution, no blurry bitmaps
 - 🛎️ **Six bell styles** — *Classic*, *Push button* (a pulsing halo shows visitors where to press), *Temple* bell, *Hand bell*,
   *Twin bells* and *Flat*, picked on the doorbell's **Bell** page from thumbnails drawn in your bell colour
-- 🔊 **Ding-dong at the door** — a chime on the board's speaker (8 Ω, MX1.25 connector) tells the visitor the bell rang
+- 🔊 **Chime at the door** — on the board's speaker (8 Ω, MX1.25 connector) so the visitor hears it rang: five chimes,
+  once per press or for the whole ring, three volume levels (**Sound** settings page)
 - ✋ **Hold 5 s for settings** — a ring traces the screen edge while you hold
 - 📶 **Wi-Fi setup on the screen** — scan, pick a network, type the password on a keyboard sized for the round display; saved and reconnected after every reboot; a wrong password never loses the network that worked
 - 🕒 **Network clock** — time and date from NTP (IST), never a made-up time

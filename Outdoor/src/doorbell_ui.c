@@ -28,6 +28,7 @@
 #include "doorbell_net.h"
 #include "doorbell_sound.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,7 +44,7 @@
 #define KV_UI       "db_ui"
 
 /* Settings pages are consecutive so prev/next is just -1/+1. */
-typedef enum { HOME, WIFI, APPEARANCE, BELL, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
+typedef enum { HOME, WIFI, APPEARANCE, BELL, SOUND, DURATION, CONTROLLER, WIFI_LIST, ENTRY, PAGE_COUNT } page_t;
 #define FIRST_SETTING WIFI
 #define LAST_SETTING  CONTROLLER
 
@@ -92,6 +93,15 @@ enum { STYLE_CLASSIC, STYLE_BUTTON, STYLE_TEMPLE, STYLE_HAND, STYLE_TWIN, STYLE_
 static const char *const style_names[STYLE_COUNT] = {"Classic", "Push button", "Temple", "Hand bell", "Twin bells", "Flat"};
 static uint32_t bell_style = STYLE_CLASSIC;
 static bool glow_on = true; /* aurora glow behind the bell (Appearance page) */
+/* Chime on the doorbell's own speaker (Sound page). */
+static uint32_t chime_idx = CHIME_DING_DONG;
+static bool chime_repeat;      /* false: once per press; true: for the whole ring */
+static const struct {
+    const char *name;
+    uint8_t volume;
+} volumes[] = {{"Quiet", 40}, {"Normal", 70}, {"Loud", 100}};
+#define VOLUME_COUNT (sizeof(volumes) / sizeof(volumes[0]))
+static uint8_t chime_volume = 70;
 
 static page_t page = HOME;
 static lv_obj_t *pages[PAGE_COUNT];
@@ -119,6 +129,9 @@ static lv_obj_t *theme_cards[THEME_COUNT];
 static lv_obj_t *swatches[BELL_COLOR_COUNT];
 static lv_obj_t *style_cards[STYLE_COUNT];
 static lv_obj_t *style_thumbs[STYLE_COUNT];
+static lv_obj_t *chime_cards[CHIME_COUNT];
+static lv_obj_t *repeat_cards[2];
+static lv_obj_t *volume_cards[VOLUME_COUNT];
 static lv_obj_t *duration_btns[DURATION_COUNT];
 
 /* Wi-Fi and Indoor Unit pages share one layout. */
@@ -136,13 +149,27 @@ static char entry_ssid[NET_SSID_MAX + 1];
 
 /* ---------- persistent settings ---------- */
 
+/* Keeps the indoor unit's settings page in step. */
+static void report_settings(void)
+{
+    net_settings_t s = {.theme = theme_idx,
+                        .bell_color = bell_idx,
+                        .ring_seconds = ring_seconds,
+                        .bell_style = bell_style,
+                        .chime = chime_idx,
+                        .volume = chime_volume,
+                        .glow = glow_on,
+                        .chime_repeat = chime_repeat};
+    net_report_settings(&s);
+}
+
 static void save_config(void)
 {
-    uint8_t v[5] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style, (uint8_t)glow_on};
+    uint8_t v[8] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style,
+                    (uint8_t)glow_on,   (uint8_t)chime_idx, (uint8_t)chime_repeat, chime_volume};
     if (tal_kv_set(KV_UI, v, sizeof(v)) != OPRT_OK)
         PR_ERR("[DOORBELL] saving settings failed");
-    /* keeps the indoor settings page in step */
-    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style, glow_on);
+    report_settings();
 }
 
 static void load_config(void)
@@ -156,6 +183,11 @@ static void load_config(void)
             bell_style = v[3];
         if (len >= 5)
             glow_on = v[4] != 0;
+        if (len >= 8 && v[5] < CHIME_COUNT && v[7] <= 100) {
+            chime_idx = v[5];
+            chime_repeat = v[6] != 0;
+            chime_volume = v[7];
+        }
         theme_idx = v[0];
         bell_idx = v[1];
         for (uint32_t i = 0; i < DURATION_COUNT; i++)
@@ -949,6 +981,17 @@ static void refresh_values(void)
     for (uint32_t i = 0; i < STYLE_COUNT; i++)
         lv_obj_set_state(style_cards[i], LV_STATE_CHECKED, i == bell_style);
     lv_obj_set_state(glow_card, LV_STATE_CHECKED, glow_on);
+    for (uint32_t i = 0; i < CHIME_COUNT; i++)
+        lv_obj_set_state(chime_cards[i], LV_STATE_CHECKED, i == chime_idx);
+    for (uint32_t i = 0; i < 2; i++)
+        lv_obj_set_state(repeat_cards[i], LV_STATE_CHECKED, (i == 1) == chime_repeat);
+    /* the closest level, so a volume set from the indoor unit still shows */
+    uint32_t best = 0;
+    for (uint32_t i = 1; i < VOLUME_COUNT; i++)
+        if (abs((int)volumes[i].volume - chime_volume) < abs((int)volumes[best].volume - chime_volume))
+            best = i;
+    for (uint32_t i = 0; i < VOLUME_COUNT; i++)
+        lv_obj_set_state(volume_cards[i], LV_STATE_CHECKED, i == best);
     lv_label_set_text(lv_obj_get_child(glow_card, 0), glow_on ? LV_SYMBOL_EYE_OPEN "  Glow: Aurora" : "Glow: Off");
     for (uint32_t i = 0; i < DURATION_COUNT; i++)
         lv_obj_set_state(duration_btns[i], LV_STATE_CHECKED, durations[i] == ring_seconds);
@@ -1140,6 +1183,8 @@ static void end_ring(void)
     }
     is_ringing = false;
     set_ring_animation(false);
+    if (chime_repeat)
+        sound_stop(); /* a single chime just finishes */
 }
 
 static void timeout_cb(lv_timer_t *t)
@@ -1162,7 +1207,7 @@ static void start_ring(void)
         return; /* repeated presses by a visitor do not restart or cancel it */
     is_ringing = true;
     net_publish_start(ring_seconds);
-    sound_chime(); /* the visitor hears that it rang */
+    sound_play(chime_repeat); /* the visitor hears that it rang */
     set_ring_animation(true);
     ring_timer = lv_timer_create(timeout_cb, ring_seconds * 1000, NULL);
     lv_timer_set_repeat_count(ring_timer, 1);
@@ -1211,8 +1256,19 @@ static void apply_remote_settings(void)
         bell_style = ns.remote_style;
     if (ns.remote_glow >= 0)
         glow_on = ns.remote_glow != 0;
-    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, glow %d, ring %us",
-              (unsigned)theme_idx, (unsigned)bell_idx, (unsigned)bell_style, glow_on, (unsigned)ring_seconds);
+    if (ns.remote_chime >= 0 && (uint32_t)ns.remote_chime < CHIME_COUNT && (uint32_t)ns.remote_chime != chime_idx) {
+        chime_idx = ns.remote_chime;
+        sound_set_chime(chime_idx);
+    }
+    if (ns.remote_repeat >= 0)
+        chime_repeat = ns.remote_repeat != 0;
+    if (ns.remote_volume >= 0 && ns.remote_volume <= 100) {
+        chime_volume = (uint8_t)ns.remote_volume;
+        sound_set_volume(chime_volume);
+    }
+    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, glow %d, chime %u%s vol %u, ring %us",
+              (unsigned)theme_idx, (unsigned)bell_idx, (unsigned)bell_style, glow_on, (unsigned)chime_idx,
+              chime_repeat ? " repeating," : ",", (unsigned)chime_volume, (unsigned)ring_seconds);
     if (art || style)
         update_bell_art(art); /* thumbnails only change with the colour */
     if (style)
@@ -1324,6 +1380,33 @@ static void swatch_cb(lv_event_t *e)
     bell_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
     update_bell_art(true);
     apply_theme();
+    refresh_values();
+    save_config();
+}
+
+/* Sound page: a new chime or volume plays once as a preview. */
+static void chime_cb(lv_event_t *e)
+{
+    chime_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
+    sound_set_chime(chime_idx);
+    sound_play(false);
+    refresh_values();
+    save_config();
+}
+
+static void repeat_cb(lv_event_t *e)
+{
+    chime_repeat = (intptr_t)lv_event_get_user_data(e) != 0;
+    refresh_values();
+    save_config();
+}
+
+static void volume_cb(lv_event_t *e)
+{
+    chime_volume = volumes[(intptr_t)lv_event_get_user_data(e)].volume;
+    sound_set_volume(chime_volume);
+    sound_stop();
+    sound_play(false);
     refresh_values();
     save_config();
 }
@@ -1690,6 +1773,36 @@ static void create_appearance(lv_obj_t *p)
     lv_obj_center(l);
 }
 
+/* Small text card for the Sound page. */
+static lv_obj_t *sound_card(lv_obj_t *p, int32_t w, int32_t x, int32_t y, const char *text, lv_event_cb_t cb,
+                            intptr_t value)
+{
+    lv_obj_t *card = add_card(p, w, 36, cb, (void *)value);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, x, y);
+    lv_obj_t *l = lv_label_create(card);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    return card;
+}
+
+/* Chime (2 columns), once / whole ring, and volume; all kept inside the circle. */
+static void create_sound_page(lv_obj_t *p)
+{
+    add_settings_frame(p, SOUND, "Sound");
+    for (uint32_t i = 0; i < CHIME_COUNT; i++) {
+        bool alone = i == CHIME_COUNT - 1 && CHIME_COUNT % 2; /* odd last one is centred */
+        chime_cards[i] = sound_card(p, 130, alone ? 0 : (i % 2 ? 69 : -69), 78 + (int32_t)(i / 2) * 40,
+                                    chime_names[i], chime_cb, (intptr_t)i);
+    }
+    add_muted(p, &lv_font_montserrat_14, 202, "Plays");
+    repeat_cards[0] = sound_card(p, 130, -69, 222, "Once", repeat_cb, 0);
+    repeat_cards[1] = sound_card(p, 130, 69, 222, "Whole ring", repeat_cb, 1);
+    add_muted(p, &lv_font_montserrat_14, 266, "Volume");
+    for (uint32_t i = 0; i < VOLUME_COUNT; i++)
+        volume_cards[i] = sound_card(p, 86, ((int32_t)i - 1) * 92, 286, volumes[i].name, volume_cb, (intptr_t)i);
+}
+
 /* Bell style picker: 3 x 2 cards, each a thumbnail drawn in the current bell colour. */
 static void create_bell_page(lv_obj_t *p)
 {
@@ -1754,6 +1867,7 @@ static void create_ui(void)
                        scan_cb);
     create_appearance(pages[APPEARANCE]);
     create_bell_page(pages[BELL]);
+    create_sound_page(pages[SOUND]);
     create_duration(pages[DURATION]);
     create_status_page(pages[CONTROLLER], CONTROLLER, LV_SYMBOL_HOME, "Indoor Unit", &ctrl_view,
                        LV_SYMBOL_EDIT "  Set address", broker_cb);
@@ -1779,10 +1893,10 @@ void user_main(void)
     tal_workq_init();
     tal_time_service_init();
     board_register_hardware();
-    sound_init();
     load_config();
+    sound_init(chime_idx, chime_volume); /* after board_register_hardware() and the saved settings */
     net_start();
-    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style, glow_on);
+    report_settings();
 
     lv_vendor_init(DISPLAY_NAME);
     lv_vendor_disp_lock();

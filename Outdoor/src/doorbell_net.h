@@ -60,6 +60,7 @@ typedef struct {
     /* UI settings sent by the indoor unit: bumps remote_seq, -1 = not in that message */
     uint32_t remote_seq;
     int32_t remote_theme, remote_bell, remote_ring, remote_style, remote_glow;
+    int32_t remote_chime, remote_repeat, remote_volume;
 } net_status_t;
 
 /* Call once after tal_kv_init(); connects with the saved Wi-Fi if any. */
@@ -82,6 +83,11 @@ void net_set_broker(const char *host);
 void net_publish_start(uint32_t seconds);
 void net_publish_stop(void);
 
-/* Current UI settings, published (retained) for the indoor unit's settings page.
- * Call at start-up and after every change. */
-void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds, uint32_t bell_style, bool glow);
+/* The doorbell's own settings, as shown on the indoor unit's settings page. */
+typedef struct {
+    uint32_t theme, bell_color, ring_seconds, bell_style, chime, volume;
+    bool glow, chime_repeat;
+} net_settings_t;
+
+/* Publishes them (retained). Call at start-up and after every change. */
+void net_report_settings(const net_settings_t *s);
