@@ -261,10 +261,19 @@ doorbell/
 
 ## 🔒 Good to know
 
-- The MQTT link is **unauthenticated and unencrypted** — fine on a trusted home LAN; add a password file for anything more.
-  The doorbell's Wi-Fi password travels in clear text when it is changed from the dashboard.
+- **Encrypted doorbell link** — the doorbell talks to the Pi's broker over **TLS 1.2 with a pre-shared key** on port 8883
+  (ECDHE-PSK-AES128-CBC-SHA256: forward secrecy, no certificates, so it works before the doorbell's clock is set).
+  Only a doorbell holding the key can connect, and that key may only use `home/doorbell/…` topics. The dashboard
+  connects to the broker on `127.0.0.1`, so its traffic never leaves the Pi. To set it up:
+  1. On the PC: `python Outdoor/tools/make_psk.py` writes the key into `Outdoor/src/doorbell_secret.h` and
+     `Indoor/mqtt_psk.txt`; copy the latter to `~/Indoor/` on the Pi. Both files are git-ignored.
+  2. On the Pi: `sudo bash ~/Indoor/tools/setup_mqtt_tls.sh` adds the encrypted listener; plain 1883 stays open meanwhile.
+  3. Build and flash the doorbell (without the header it builds plain MQTT and warns).
+  4. Once the doorbell shows *Connected*: `sudo bash ~/Indoor/tools/setup_mqtt_tls.sh --lock` limits plain MQTT to the Pi itself.
+- **Notifications** go to ntfy.sh over HTTPS; a self-hosted server is reached over Tailscale (WireGuard). Settings → Phone shows which.
+  The ntfy server itself can read the alert text ("Someone is at the front door · time"), nothing more.
+- The trial intercom's audio (UDP 5004) is not encrypted yet; it is off by default.
 - Both devices must be able to reach each other: avoid guest Wi-Fi networks, which block devices from talking to each other.
-- The *Front door* shortcut on the dashboard is a placeholder for an on-demand camera view.
 
 ## 🙏 Credits
 

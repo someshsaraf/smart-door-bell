@@ -23,6 +23,7 @@
 #define DOORBELL_ACK_WAIT_MS  2000 /* resend the start if no ack within this */
 #define DOORBELL_START_RESENDS 3   /* resends after the first send */
 #define DOORBELL_MQTT_PORT    1883
+#define DOORBELL_MQTT_TLS_PORT 8883 /* used when Outdoor/src/doorbell_secret.h holds a key */
 #define DOORBELL_MQTT_CLIENT  "tuya-outdoor-doorbell"
 #define DOORBELL_MQTT_USER    "" /* empty: anonymous, as in the Pi sample config */
 #define DOORBELL_MQTT_PASS    ""

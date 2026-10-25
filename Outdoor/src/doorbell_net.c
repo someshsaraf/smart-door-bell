@@ -5,7 +5,19 @@
  * SDK's libmqtt wrapper blocks for up to 5 s per read when the line is idle,
  * which would delay a ring; here every wait is a short select() so a bell
  * press goes out within one loop pass (~50 ms).
+ *
+ * Encryption: with Outdoor/src/doorbell_secret.h present (a pre-shared key,
+ * kept out of git), MQTT runs over TLS 1.2 with that key on port 8883
+ * (ECDHE-PSK-AES128-CBC-SHA256: forward secrecy, and only a doorbell holding
+ * the key gets in). PSK needs no certificates, so it works before the clock
+ * is set from NTP and whatever address the Pi has. Without the header the
+ * link is plain MQTT on 1883, and the build says so.
  */
+#if defined(__has_include)
+#if __has_include("doorbell_secret.h")
+#include "doorbell_secret.h"
+#endif
+#endif
 #include "tuya_cloud_types.h"
 #include "tal_api.h"
 #include "tal_kv.h"
@@ -17,6 +29,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef DOORBELL_PSK_HEX
+#define BROKER_TLS  1
+#define BROKER_PORT DOORBELL_MQTT_TLS_PORT
+#include "tuya_tls.h" /* tuya_tls_init (mbedtls allocator), tuya_tls_random */
+#include "mbedtls/ssl.h"
+#else
+#define BROKER_TLS  0
+#define BROKER_PORT DOORBELL_MQTT_PORT
+#warning "Outdoor/src/doorbell_secret.h missing: MQTT to the indoor unit is NOT encrypted"
+#endif
 
 #define KV_WIFI   "db_wifi"
 #define KV_BROKER "db_broker"
@@ -99,6 +122,140 @@ static uint32_t now_ms(void)
 static bool due(uint32_t at)
 {
     return (int32_t)(now_ms() - at) >= 0;
+}
+
+/* ---------- link to the broker: plain TCP, or TLS over it ---------- */
+
+#define LINK_AGAIN -2 /* nothing to read yet (TLS: a record not complete) */
+
+#if BROKER_TLS
+#define TLS_IO_MS        3000  /* one read during the handshake or of a split record */
+#define TLS_HANDSHAKE_MS 10000
+static mbedtls_ssl_context ssl;
+static mbedtls_ssl_config ssl_conf;
+static bool tls_up;
+static uint8_t psk[32];
+static size_t psk_len;
+static const int psk_suites[] = {MBEDTLS_TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256, 0};
+
+static int tls_rng(void *ctx, unsigned char *out, size_t len)
+{
+    (void)ctx;
+    return tuya_tls_random(out, len);
+}
+
+static int bio_send(void *ctx, const unsigned char *buf, size_t len)
+{
+    (void)ctx;
+    int n = tal_net_send(sock, buf, (uint32_t)len);
+    return n > 0 ? n : MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+}
+
+static int bio_recv(void *ctx, unsigned char *buf, size_t len)
+{
+    (void)ctx;
+    TUYA_FD_SET_T rd;
+    tal_net_fd_zero(&rd);
+    tal_net_fd_set(sock, &rd);
+    if (tal_net_select(sock + 1, &rd, NULL, NULL, TLS_IO_MS) <= 0)
+        return MBEDTLS_ERR_SSL_TIMEOUT;
+    int n = tal_net_recv(sock, buf, (uint32_t)len);
+    return n > 0 ? n : n == 0 ? MBEDTLS_ERR_SSL_CONN_EOF : MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+}
+
+static int hex_nibble(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+static void tls_free(void)
+{
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&ssl_conf);
+    tls_up = false;
+}
+
+/* Handshake on the connected socket; false (and a log line) if the key or the broker's TLS listener is wrong. */
+static bool tls_start(void)
+{
+    static bool lib_ready;
+    if (!lib_ready) {
+        tuya_tls_init(); /* mbedtls heap (PSRAM) and threading hooks */
+        const char *h = DOORBELL_PSK_HEX;
+        for (psk_len = 0; psk_len < sizeof(psk) && hex_nibble(h[0]) >= 0 && hex_nibble(h[1]) >= 0; h += 2)
+            psk[psk_len++] = (uint8_t)(hex_nibble(h[0]) << 4 | hex_nibble(h[1]));
+        lib_ready = true;
+    }
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&ssl_conf);
+    int r = mbedtls_ssl_config_defaults(&ssl_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                        MBEDTLS_SSL_PRESET_DEFAULT);
+    if (r == 0) {
+        mbedtls_ssl_conf_rng(&ssl_conf, tls_rng, NULL);
+        mbedtls_ssl_conf_ciphersuites(&ssl_conf, psk_suites);
+        r = mbedtls_ssl_conf_psk(&ssl_conf, psk, psk_len, (const unsigned char *)DOORBELL_PSK_IDENTITY,
+                                 strlen(DOORBELL_PSK_IDENTITY));
+    }
+    if (r == 0)
+        r = mbedtls_ssl_setup(&ssl, &ssl_conf);
+    if (r == 0) {
+        mbedtls_ssl_set_bio(&ssl, NULL, bio_send, bio_recv, NULL);
+        uint32_t until = now_ms() + TLS_HANDSHAKE_MS;
+        while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ||
+               r == MBEDTLS_ERR_SSL_TIMEOUT)
+            if (due(until))
+                break;
+    }
+    if (r != 0) {
+        PR_ERR("[NET] TLS with the broker failed (-0x%04x): same key on both sides? 8883 listener set up?", -r);
+        tls_free();
+        return false;
+    }
+    tls_up = true;
+    PR_NOTICE("[NET] encrypted: %s", mbedtls_ssl_get_ciphersuite(&ssl));
+    return true;
+}
+#endif
+
+static int link_write(const uint8_t *buf, uint32_t len)
+{
+#if BROKER_TLS
+    if (tls_up) {
+        int n;
+        while ((n = mbedtls_ssl_write(&ssl, buf, len)) == MBEDTLS_ERR_SSL_WANT_WRITE)
+            ;
+        return n;
+    }
+#endif
+    return tal_net_send(sock, buf, len);
+}
+
+/* Bytes read, 0 when the broker closed, LINK_AGAIN when nothing complete yet, < 0 on errors. */
+static int link_read(uint8_t *buf, uint32_t len)
+{
+#if BROKER_TLS
+    if (tls_up) {
+        int n = mbedtls_ssl_read(&ssl, buf, len);
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE || n == MBEDTLS_ERR_SSL_TIMEOUT)
+            return LINK_AGAIN;
+        return n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ? 0 : n;
+    }
+#endif
+    return tal_net_recv(sock, buf, len);
+}
+
+/* Data to read within `ms`: decrypted bytes TLS already holds count too,
+ * since the socket itself would not report them. */
+static bool link_readable(uint32_t ms)
+{
+#if BROKER_TLS
+    if (tls_up && (mbedtls_ssl_get_bytes_avail(&ssl) > 0 || mbedtls_ssl_check_pending(&ssl)))
+        return true;
+#endif
+    TUYA_FD_SET_T rd;
+    tal_net_fd_zero(&rd);
+    tal_net_fd_set(sock, &rd);
+    return tal_net_select(sock + 1, &rd, NULL, NULL, ms) > 0;
 }
 
 static void set_mqtt_state(net_mqtt_state_t s)
@@ -390,7 +547,7 @@ static int put_header(uint8_t *p, uint8_t type, uint32_t remaining)
 static bool sock_send(const uint8_t *buf, int len)
 {
     while (len > 0) {
-        int n = tal_net_send(sock, buf, (uint32_t)len);
+        int n = link_write(buf, (uint32_t)len);
         if (n <= 0)
             return false;
         buf += n;
@@ -403,6 +560,12 @@ static bool sock_send(const uint8_t *buf, int len)
 static void mqtt_close(void)
 {
     if (sock >= 0) {
+#if BROKER_TLS
+        if (tls_up) {
+            mbedtls_ssl_close_notify(&ssl);
+            tls_free();
+        }
+#endif
         tal_net_close(sock);
         sock = -1;
         PR_NOTICE("[NET] MQTT closed");
@@ -415,10 +578,7 @@ static void mqtt_close(void)
 
 static bool wait_readable(uint32_t ms)
 {
-    TUYA_FD_SET_T rd;
-    tal_net_fd_zero(&rd);
-    tal_net_fd_set(sock, &rd);
-    return tal_net_select(sock + 1, &rd, NULL, NULL, ms) > 0;
+    return link_readable(ms);
 }
 
 static bool mqtt_publish_ex(const char *topic, const char *payload, bool retain)
@@ -515,15 +675,21 @@ static void mqtt_open(const char *host)
      * also reports writable; the CONNECT/CONNACK exchange below then fails. */
     TUYA_FD_SET_T wr;
     tal_net_set_block(sock, FALSE);
-    tal_net_connect(sock, addr, DOORBELL_MQTT_PORT);
+    tal_net_connect(sock, addr, BROKER_PORT);
     tal_net_fd_zero(&wr);
     tal_net_fd_set(sock, &wr);
     if (tal_net_select(sock + 1, NULL, &wr, NULL, TCP_CONNECT_MS) <= 0) {
-        PR_ERR("[NET] broker %s:%d not answering (firewall or wrong address?)", host, DOORBELL_MQTT_PORT);
+        PR_ERR("[NET] broker %s:%d not answering (firewall or wrong address?)", host, BROKER_PORT);
         mqtt_close();
         return;
     }
     tal_net_set_block(sock, TRUE);
+#if BROKER_TLS
+    if (!tls_start()) {
+        mqtt_close();
+        return;
+    }
+#endif
 
     /* CONNECT: protocol "MQTT" level 4, clean session, optional user/pass, and
      * a retained last will so the broker reports "offline" if we vanish. */
@@ -543,7 +709,7 @@ static void mqtt_open(const char *host)
         b += put_str(body + b, DOORBELL_MQTT_PASS);
     i = put_header(buf, 0x10, (uint32_t)b);
     memcpy(buf + i, body, b);
-    if (!sock_send(buf, i + b) || !wait_readable(MQTT_ACK_MS) || tal_net_recv(sock, buf, 4) != 4 ||
+    if (!sock_send(buf, i + b) || !wait_readable(MQTT_ACK_MS) || link_read(buf, 4) != 4 ||
         buf[0] != 0x20 || buf[3] != 0) {
         PR_ERR("[NET] broker refused the connection");
         mqtt_close();
@@ -817,12 +983,13 @@ static void mqtt_poll(uint32_t ms)
             mqtt_close(); /* a packet bigger than we ever expect */
             return;
         }
-        int n = tal_net_recv(sock, rx + rx_len, sizeof(rx) - rx_len);
-        if (n <= 0) {
+        int n = link_read(rx + rx_len, sizeof(rx) - rx_len);
+        if (n != LINK_AGAIN && n <= 0) {
             mqtt_close();
             return;
         }
-        rx_len += (uint32_t)n;
+        if (n > 0)
+            rx_len += (uint32_t)n;
     }
 
     for (;;) {

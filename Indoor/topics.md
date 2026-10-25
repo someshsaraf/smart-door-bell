@@ -32,8 +32,10 @@ Any subset of these fields in one `home/doorbell/outdoor/config` message:
 | `wifi`, `broker` | `{"ssid","password"}` / `"192.168.1.102"` | Older separate forms; handled exactly like `network` |
 | `command` | `"wifi_scan"` | Scans and answers on `home/doorbell/outdoor/wifi_scan` |
 
-The outdoor unit saves every change, so it survives a restart. The Wi-Fi password
-travels in clear text over the LAN; see the broker section of the README.
+The outdoor unit saves every change, so it survives a restart. With the doorbell's
+TLS key set up (README, "Good to know") the doorbell connects on port 8883 with
+TLS-PSK, so these messages, including a Wi-Fi password, are encrypted on the LAN;
+the dashboard uses 127.0.0.1:1883 on the Pi itself.
 
 Delivery of a start:
 

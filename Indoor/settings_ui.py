@@ -242,7 +242,7 @@ class PhonePanel(QWidget):
         self.show_topic()
     def show_topic(self):
         self.topic.setText(self.settings["notify_topic"])
-        self.server.setText(f"Server: {self.notifier.server}   ·   web: {self.notifier.topic_url()}")
+        self.server.setText(f"Server: {self.notifier.server}   ·   {self.notifier.encryption()}")
     def set_on(self, value):
         self.settings["notify"] = value; self.save()
         self.msg.setText("Rings will be sent to the topic above" if value else "No notifications are sent")
