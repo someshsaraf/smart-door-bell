@@ -109,7 +109,8 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🕒 **Ambient home screen** — large clock and date over a full-screen backdrop; one tap switches **News ⇄ Photos**
 - 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
-- 🚪 **Visitor alert** — live VIGI camera feed (RTSP), countdown and a big **STOP** that also returns the doorbell to its main screen
+- 🚪 **Visitor alert** — live VIGI camera feed (RTSP) filling the screen, countdown and a big **STOP** that also returns the doorbell to its main screen
+- 📷 **Camera setup on the screen** — finds the camera on the network, takes its login, tests it with a snapshot
 - 🔊 **16 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor), festive (Jingle Bells, Auld Lang Syne) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
 - 🎙️ **Two-way talk (trial, off by default: Settings → Speaker)** — **Talk** on the visitor screen, or any time from the **Front door** tile (live camera + intercom). The Bluetooth speaker switches to its hands-free microphone for the call and back to full-quality playback afterwards
 - 📱 **Phone notifications** — a push alert on every ring through the free [ntfy](https://ntfy.sh) app, no account needed: subscribe to the topic shown under **Settings → Phone** (own server: `sudo bash Indoor/tools/setup_ntfy.sh` installs ntfy on the Pi with logins, then set `"notify": {"server": "...", "token": "tk_..."}` in `config.json`)
@@ -188,7 +189,9 @@ python3 app.py                      # try it
 sh autostart/install.sh             # start it at every boot
 ```
 
-Set the camera in `~/Indoor/config.json` → `"camera": {"rtsp_url": "rtsp://USER:PASS@CAMERA_IP:554/stream1"}`.
+Set up the camera on the dashboard: **Settings → Camera → Find** discovers it on the network (ONVIF names it,
+e.g. *VIGI C330I*), then enter its password, **Test connection** (shows a snapshot) and **Save**. The login is kept
+only in `~/Indoor/secrets.json` on the Pi (readable by nobody else, git-ignored).
 Pair the speaker, pick a tone and choose your news under **⚙ Settings**.
 Full details: **[Indoor/README.md](Indoor/README.md)**.
 

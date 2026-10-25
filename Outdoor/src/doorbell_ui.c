@@ -40,6 +40,10 @@
 
 #define SCREEN_SIZE 466
 #define HOLD_MS     5000 /* home screen long press that opens settings */
+/* How the picture is turned for the way the doorbell is mounted. LVGL names
+ * the turn of the panel: ROTATION_90 shows the picture 90 degrees to the left
+ * (counter-clockwise). Touches are turned to match by LVGL. */
+#define SCREEN_ROTATION LV_DISPLAY_ROTATION_90
 #define DONE_Y      374  /* bottom "Done" pill on settings pages */
 #define DOTS_Y      346  /* page indicator on settings pages */
 #define KV_UI       "db_ui"
@@ -2035,6 +2039,7 @@ static void create_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
+    lv_display_set_rotation(lv_display_get_default(), SCREEN_ROTATION); /* round panel: same size either way */
     init_styles();
     init_bell_art();
     update_bell_art(true);

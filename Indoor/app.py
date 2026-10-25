@@ -31,6 +31,7 @@ from news import News, ago
 from settings_ui import SettingsPage, this_ip
 from intercom import Intercom, PORT as TALK_PORT
 from notify import Notifier
+import camera_cfg
 
 ROOT = Path(__file__).resolve().parent
 CFG = json.loads((ROOT / "config.json").read_text())
@@ -389,14 +390,15 @@ class RingPage(QFrame):
         video=QFrame(); video.setObjectName("video"); vl=QVBoxLayout(video); vl.setContentsMargins(0,0,0,0)
         self.view=label("","videoView"); self.view.setAlignment(Qt.AlignCenter)
         self.view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)  # never resized by the frames it shows
-        vl.addWidget(self.view)
-        self.cam_note=label("", "camNote"); self.cam_note.setAlignment(Qt.AlignCenter); vl.addWidget(self.cam_note)
+        vl.addWidget(self.view, 1)  # the picture takes all the room; the note below only shows with a message
+        self.cam_note=label("", "camNote"); self.cam_note.setAlignment(Qt.AlignCenter)
+        self.cam_note.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed); self.cam_note.hide(); vl.addWidget(self.cam_note)
         root.addWidget(video,3)
 
         side=QVBoxLayout(); side.setSpacing(10)
         self.section=label("FRONT DOOR · VISITOR ALERT","section"); side.addWidget(self.section)
         side.addStretch()
-        self.bell=label("🔔","bell"); self.bell.setAlignment(Qt.AlignCenter); side.addWidget(self.bell)
+        self.bell=label("♪","bell"); self.bell.setAlignment(Qt.AlignCenter); side.addWidget(self.bell)
         self.title=label("Someone is at the door","ringTitle"); self.title.setAlignment(Qt.AlignCenter); self.title.setWordWrap(True); side.addWidget(self.title)
         self.subtitle=label("Bell is playing","secondary"); self.subtitle.setAlignment(Qt.AlignCenter); side.addWidget(self.subtitle)
         self.count=label("00:30","count"); self.count.setAlignment(Qt.AlignCenter); side.addWidget(self.count)
@@ -412,7 +414,7 @@ class RingPage(QFrame):
     def set_mode(self, ringing):
         """Visitor alert (countdown, STOP) or the live door view from the Front door tile (CLOSE)."""
         self.section.setText("FRONT DOOR · VISITOR ALERT" if ringing else "FRONT DOOR · LIVE")
-        self.bell.setText("🔔" if ringing else "⌂"); self.title.setText("Someone is at the door" if ringing else "Front door")
+        self.bell.setText("♪" if ringing else "⌂"); self.title.setText("Someone is at the door" if ringing else "Front door")
         self.subtitle.setVisible(ringing); self.count.setVisible(ringing); self.stop_btn.setText("STOP" if ringing else "CLOSE")
         self.talk_btn.setVisible(SETTINGS.get("intercom", False))  # trial feature, off by default (Settings > Speaker)
     def set_call(self, active, note=""):
@@ -422,7 +424,9 @@ class RingPage(QFrame):
         self.last=img
         self.view.setPixmap(QPixmap.fromImage(img).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
     def clear_video(self, note):
-        self.last=None; self.view.clear(); self.cam_note.setText(note)
+        self.last=None; self.view.clear(); self.set_note(note)
+    def set_note(self, text):
+        self.cam_note.setText(text); self.cam_note.setVisible(bool(text))
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.last is not None: self.show_frame(self.last)
@@ -538,11 +542,11 @@ class Window(QWidget):
         if self.active: self.until=max(self.until, time.monotonic()+10)  # a moment to see the door before the page closes
     def start_camera(self):
         if self.camera: return
-        url=CFG.get("camera",{}).get("rtsp_url","")
-        if not url: self.ring.clear_video("Camera not configured · set camera.rtsp_url in config.json"); return
+        url=camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url","")  # Settings > Camera, else config.json
+        if not url: self.ring.clear_video("Camera not set up · Settings › Camera"); return
         if cv2 is None: self.ring.clear_video("OpenCV missing · sudo apt install python3-opencv"); return
         self.ring.clear_video("Connecting to camera…")
-        self.camera=Camera(url); self.camera.frame.connect(self.on_frame); self.camera.state.connect(self.ring.cam_note.setText); self.camera.start()
+        self.camera=Camera(url); self.camera.frame.connect(self.on_frame); self.camera.state.connect(self.ring.set_note); self.camera.start()
     def on_frame(self, img):
         self.ring.show_frame(img)
         if self.camera: self.camera.idle.set()
@@ -633,6 +637,8 @@ STYLE = Template("""
     QPushButton:checked {background:$accent;border-color:$accent;color:$on_accent;}
     QPushButton#nav {text-align:left;padding-left:24px;font-size:19px;}
     QLabel#pageTitle {font-size:30px;font-weight:700;}
+    QLabel#camValue {font-size:22px;font-weight:600;}
+    QLabel#camPreview {background:#000;border:1px solid $line;border-radius:14px;color:$muted;}
     QLabel#topicName {font-size:34px;font-weight:700;color:$count;padding:4px 0;}
     QFrame#panel {background:$panel;border:1px solid $line;border-radius:18px;}
     QFrame#panel QLabel, QFrame#panel QSlider {background:transparent;}

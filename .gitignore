@@ -5,6 +5,8 @@ Outdoor/dist/
 # MQTT TLS pre-shared key (generated per installation; see Indoor/tools/setup_mqtt_tls.sh)
 Outdoor/src/doorbell_secret.h
 Indoor/mqtt_psk.txt
+# camera login (Settings > Camera)
+Indoor/secrets.json
 
 # Indoor dashboard: per-device state and caches
 Indoor/settings.json

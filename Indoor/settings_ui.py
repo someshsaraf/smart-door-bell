@@ -213,6 +213,98 @@ class NewsPanel(QWidget):
         self.settings["news_genres"] = keys or ["top"]; self.save(); self.changed()
         self.msg.setText("Updating headlines…" if keys else "No genre chosen: showing top stories")
 
+class CameraPanel(QWidget):
+    """VIGI camera: address, login and stream, with a test that shows a snapshot."""
+    tested = Signal(bool, object)  # ok, BGR frame or the reason it failed
+    found = Signal(list)
+
+    def __init__(self):
+        super().__init__()
+        import camera_cfg
+        self.cfg = camera_cfg; self.cam = camera_cfg.load()
+        lay = QVBoxLayout(self); lay.setSpacing(10)
+        lay.addWidget(label("Camera", "sectionTitle"))
+        lay.addWidget(label("The front-door camera shown when someone rings. The login is kept only on this Pi "
+                            "(secrets.json, readable by nobody else) and never leaves it.", "secondary", True))
+        body = QHBoxLayout(); body.setSpacing(20); left = QVBoxLayout(); left.setSpacing(10)
+        self.values = {}
+        for key, title, secret in (("ip", "IP ADDRESS", False), ("user", "USERNAME", False),
+                                   ("password", "PASSWORD", True), ("main", "STREAM (VIGI: stream1)", False)):
+            left.addWidget(label(title, "section")); row = QHBoxLayout()
+            v = label("", "camValue"); row.addWidget(v, 1); self.values[key] = v
+            b = button("Change", h=56); b.setFixedWidth(150); b.clicked.connect(lambda _=False, k=key, s=secret, t=title: self.edit(k, t, s))
+            row.addWidget(b)
+            if key == "ip":
+                f = button("Find", h=56); f.setFixedWidth(110); f.clicked.connect(self.find); row.addWidget(f)
+            left.addLayout(row)
+        self.found_row = QHBoxLayout(); left.addLayout(self.found_row)
+        row = QHBoxLayout()
+        t = button("Test connection", h=64); t.clicked.connect(self.test); row.addWidget(t)
+        s = button("Save", "choice", h=64); s.clicked.connect(self.save); row.addWidget(s)
+        left.addLayout(row)
+        self.msg = label("", "secondary", True); left.addWidget(self.msg); left.addStretch()
+        body.addLayout(left, 3)
+        self.preview = QLabel("Snapshot appears here after a test"); self.preview.setObjectName("camPreview")
+        self.preview.setAlignment(Qt.AlignCenter); self.preview.setMinimumSize(480, 270)
+        body.addWidget(self.preview, 4, Qt.AlignTop); lay.addLayout(body, 1)
+        self.tested.connect(self.on_tested); self.found.connect(self.on_found)
+        self.show_values()
+
+    def show_values(self):
+        c = self.cam
+        self.values["ip"].setText(c["ip"] or "not set"); self.values["user"].setText(c["user"] or "none")
+        self.values["password"].setText("•" * 8 if c["password"] else "not set"); self.values["main"].setText(c["main"])
+
+    def edit(self, key, title, secret):
+        text = Keyboard.ask(self, title.split(" (")[0].capitalize(), "" if secret else str(self.cam[key]), password=secret)
+        if text is None: return
+        self.cam[key] = text.strip() if key != "password" else text
+        self.show_values(); self.msg.setText("Not saved yet: test it, then Save")
+
+    def find(self):
+        self.msg.setText("Looking for cameras on the network…")
+        import threading
+        threading.Thread(target=lambda: self.found.emit(self.cfg.find_cameras()), daemon=True).start()
+
+    def on_found(self, cams, quiet=False):
+        """cams: [(ip, description)]; one camera is chosen straight away."""
+        while self.found_row.count():
+            w = self.found_row.takeAt(0).widget()
+            if w: w.deleteLater()
+        if quiet: return
+        if not cams: self.msg.setText("No camera found (is it powered and on this network?)"); return
+        if len(cams) == 1:
+            self.pick(*cams[0]); return
+        self.msg.setText("Cameras found: tap yours")
+        for ip, desc in cams[:4]:
+            b = button(f"{desc}\n{ip}", "choice", h=64); b.clicked.connect(lambda _=False, ip=ip, d=desc: self.pick(ip, d))
+            self.found_row.addWidget(b)
+
+    def pick(self, ip, desc=""):
+        self.cam["ip"] = ip; self.show_values(); self.on_found([], quiet=True)
+        self.msg.setText(f"Found {desc + ' at ' if desc else ''}{ip}. Enter its password, test it, then Save")
+
+    def test(self):
+        self.msg.setText("Connecting to the camera…"); self.preview.setText("…")
+        import threading
+        try: import cv2
+        except ImportError: cv2 = None
+        cam = dict(self.cam)
+        threading.Thread(target=lambda: self.tested.emit(*self.cfg.test(cam, cv2)), daemon=True).start()
+
+    def on_tested(self, ok, result):
+        if not ok:
+            self.msg.setText("✗ " + result); self.preview.setText("No picture"); return
+        h, w = result.shape[:2]
+        rgb = result[:, :, ::-1].copy()
+        from PySide6.QtGui import QImage
+        img = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        self.preview.setPixmap(QPixmap.fromImage(img).scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.msg.setText(f"✓ Camera works: {w}×{h}. Press Save to use it.")
+
+    def save(self):
+        self.cfg.save(self.cam); self.msg.setText("✓ Saved. The ring screen uses it from the next ring.")
+
 class PhonePanel(QWidget):
     """Push notifications to phones (ntfy app): on/off, the topic to subscribe to, a test."""
     def __init__(self, settings, save, notifier):
@@ -412,9 +504,10 @@ class SettingsPage(QFrame):
         self.news = NewsPanel(settings, save, news_changed)
         self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
         self.phone = PhonePanel(settings, save, notifier)
+        self.camera = CameraPanel()
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
-                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Outdoor unit", self.outdoor)]):
+                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Outdoor unit", self.outdoor)]):
             panel_frame = QFrame(); panel_frame.setObjectName("panel"); QVBoxLayout(panel_frame).addWidget(panel); self.stack.addWidget(panel_frame)
             nb = button(text, "nav", True, 72); group.addButton(nb); nav.addWidget(nb)
             nb.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i)); nb.setChecked(i == 0)
