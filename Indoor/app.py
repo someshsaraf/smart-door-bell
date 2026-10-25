@@ -32,6 +32,8 @@ from settings_ui import SettingsPage, this_ip
 from intercom import Intercom, PORT as TALK_PORT
 from notify import Notifier
 import camera_cfg
+from recorder import Recorder, CLIP_S
+from events_ui import EventsPage
 
 ROOT = Path(__file__).resolve().parent
 CFG = json.loads((ROOT / "config.json").read_text())
@@ -329,6 +331,7 @@ class Dashboard(QFrame):
     events floating on top of it in translucent panels."""
     open_settings = Signal()
     open_door = Signal()
+    open_events = Signal()
     view_changed = Signal(str)  # "news" or "photos"
     def __init__(self, view="news"):
         super().__init__(); self.setObjectName("dashboard")
@@ -343,6 +346,7 @@ class Dashboard(QFrame):
         # Switches between news and photos; it is labelled with the view it switches to.
         self.switch = tile("", ""); self.switch.clicked.connect(lambda: self._set_view("news" if self.view == "photos" else "photos"))
         rl.addWidget(self.switch)
+        events = tile("▶","Events"); events.clicked.connect(self.open_events.emit); rl.addWidget(events)
         gear = tile("⚙","Settings"); gear.clicked.connect(self.open_settings.emit); rl.addWidget(gear)
         over.addWidget(rail, 0, Qt.AlignVCenter)
         self._set_view("photos" if view == "photos" else "news", notify=False)
@@ -447,7 +451,12 @@ class Window(QWidget):
         self.settings=SettingsPage(self.bt, TONES, SETTINGS, save_settings, self.preview, self.send_outdoor, self.news.refresh,
                                    CFG.get("festivals"), self.notifier)
         self.settings.speaker.test_cb=lambda: self.preview(self.audio.tone())
-        for page in (self.home, self.ring, self.settings): self.stack.addWidget(page)
+        self.recorder=Recorder(lambda: camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url",""))
+        self.events_page=EventsPage(self.recorder)
+        self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
+        self.events_page.back.connect(lambda: self.stack.setCurrentWidget(self.home))
+        self.home.open_events.connect(lambda: self.stack.setCurrentWidget(self.events_page))
+        for page in (self.home, self.ring, self.settings, self.events_page): self.stack.addWidget(page)
         self.home.open_settings.connect(lambda: self.stack.setCurrentWidget(self.settings))
         self.settings.back.connect(lambda: (self.audio.stop(), self.stack.setCurrentWidget(self.home)))
         layout=QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.addWidget(self.stack)
@@ -562,6 +571,8 @@ class Window(QWidget):
         self.stack.setCurrentWidget(self.ring); self.start_camera()
         if not self.intercom.active: self.audio.play()  # no bell tone over a call
         self.active=True; self.home.add_event(f"Doorbell started ({seconds}s)")
+        if source=="MQTT":  # a real press: record it (Events page)
+            self.recorder.record("ring", SETTINGS.get("record_seconds", CLIP_S))  # with 3 s from before the press
         if source=="MQTT":  # a real press (not the demo): tell the phones
             self.notifier.send("Doorbell", "Someone is at the front door · "+time.strftime("%I:%M %p").lstrip("0"))
         self.mqtt.publish(CFG["mqtt"]["topic_status"],{"state":"ringing","remaining_seconds":seconds,"event_id":event_id})
@@ -587,7 +598,7 @@ class Window(QWidget):
     @staticmethod
     def fmt(s): return f"{s//60:02d}:{s%60:02d}"
     def closeEvent(self,event):
-        self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
+        self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
 
 # Colours of every page; a festival swaps in its own set (see Window.check_festival).
 PALETTES = {
@@ -637,6 +648,13 @@ STYLE = Template("""
     QPushButton:checked {background:$accent;border-color:$accent;color:$on_accent;}
     QPushButton#nav {text-align:left;padding-left:24px;font-size:19px;}
     QLabel#pageTitle {font-size:30px;font-weight:700;}
+    QPushButton#eventCard {background:$panel;border:1px solid $line;border-radius:18px;padding:0;}
+    QPushButton#eventCard:pressed {background:$button;}
+    QPushButton#eventCard:checked {background:$button;border:3px solid $accent;}
+    QLabel#eventPic {background:#000;border-radius:12px;color:$muted;}
+    QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;}
+    QLabel#eventTime {font-size:14px;color:$muted;background:transparent;}
+    QFrame#player {background:$bg;}
     QLabel#camValue {font-size:22px;font-weight:600;}
     QLabel#camPreview {background:#000;border:1px solid $line;border-radius:14px;color:$muted;}
     QLabel#topicName {font-size:34px;font-weight:700;color:$count;padding:4px 0;}

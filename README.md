@@ -111,6 +111,10 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
 - 🚪 **Visitor alert** — live VIGI camera feed (RTSP) filling the screen, countdown and a big **STOP** that also returns the doorbell to its main screen
 - 📷 **Camera setup on the screen** — finds the camera on the network, takes its login, tests it with a snapshot
+- 🎬 **Ring recordings** — every press saves the camera from **3–5 s before the press** to 5 s after it (5–60 s under
+  Settings → Camera) onto the Pi's SD card, full quality without re-encoding. The last minute of the camera is kept
+  in RAM all the time (not on the SD card, which constant writing would wear) and the clip is cut from it. The **Events** tile lists each ring with a thumbnail; tap to play.
+  Delete one, several (Select) or all, each confirmed by a second tap. Kept 30 days, at most 10 GB
 - 🔊 **16 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor), festive (Jingle Bells, Auld Lang Syne) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
 - 🎙️ **Two-way talk (trial, off by default: Settings → Speaker)** — **Talk** on the visitor screen, or any time from the **Front door** tile (live camera + intercom). The Bluetooth speaker switches to its hands-free microphone for the call and back to full-quality playback afterwards
 - 📱 **Phone notifications** — a push alert on every ring through the free [ntfy](https://ntfy.sh) app, no account needed: subscribe to the topic shown under **Settings → Phone** (own server: `sudo bash Indoor/tools/setup_ntfy.sh` installs ntfy on the Pi with logins, then set `"notify": {"server": "...", "token": "tk_..."}` in `config.json`)

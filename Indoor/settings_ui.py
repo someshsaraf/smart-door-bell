@@ -218,10 +218,11 @@ class CameraPanel(QWidget):
     tested = Signal(bool, object)  # ok, BGR frame or the reason it failed
     found = Signal(list)
 
-    def __init__(self):
+    def __init__(self, settings, save):
         super().__init__()
         import camera_cfg
-        self.cfg = camera_cfg; self.cam = camera_cfg.load()
+        from recorder import CLIP_CHOICES, CLIP_S
+        self.cfg = camera_cfg; self.cam = camera_cfg.load(); self.settings = settings; self.save_settings = save
         lay = QVBoxLayout(self); lay.setSpacing(10)
         lay.addWidget(label("Camera", "sectionTitle"))
         lay.addWidget(label("The front-door camera shown when someone rings. The login is kept only on this Pi "
@@ -238,6 +239,11 @@ class CameraPanel(QWidget):
                 f = button("Find", h=56); f.setFixedWidth(110); f.clicked.connect(self.find); row.addWidget(f)
             left.addLayout(row)
         self.found_row = QHBoxLayout(); left.addLayout(self.found_row)
+        left.addWidget(label("RECORDING WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        for secs in CLIP_CHOICES:
+            b = button(f"{secs} s", "choice", True, 52); b.setChecked(settings.get("record_seconds", CLIP_S) == secs)
+            group.addButton(b); row.addWidget(b); b.clicked.connect(lambda _=False, s=secs: self.set_length(s))
+        left.addLayout(row)
         row = QHBoxLayout()
         t = button("Test connection", h=64); t.clicked.connect(self.test); row.addWidget(t)
         s = button("Save", "choice", h=64); s.clicked.connect(self.save); row.addWidget(s)
@@ -302,8 +308,15 @@ class CameraPanel(QWidget):
         self.preview.setPixmap(QPixmap.fromImage(img).scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.msg.setText(f"✓ Camera works: {w}×{h}. Press Save to use it.")
 
+    on_saved = None  # set by the window: restarts the recording buffer
+
     def save(self):
         self.cfg.save(self.cam); self.msg.setText("✓ Saved. The ring screen uses it from the next ring.")
+        if self.on_saved: self.on_saved()
+
+    def set_length(self, secs):
+        self.settings["record_seconds"] = secs; self.save_settings()
+        self.msg.setText(f"✓ Each ring is recorded for {secs} seconds")
 
 class PhonePanel(QWidget):
     """Push notifications to phones (ntfy app): on/off, the topic to subscribe to, a test."""
@@ -504,7 +517,7 @@ class SettingsPage(QFrame):
         self.news = NewsPanel(settings, save, news_changed)
         self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
         self.phone = PhonePanel(settings, save, notifier)
-        self.camera = CameraPanel()
+        self.camera = CameraPanel(settings, save)
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
                                            ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Outdoor unit", self.outdoor)]):

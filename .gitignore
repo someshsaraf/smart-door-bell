@@ -20,3 +20,5 @@ __pycache__/
 
 # Editor settings with paths of one PC
 .vscode/
+# ring recordings (video of visitors) stay on the Pi
+Indoor/recordings/
