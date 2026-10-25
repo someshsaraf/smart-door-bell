@@ -3,7 +3,7 @@ A tap plays the clip full screen (decoded with OpenCV, so no extra media
 packages are needed); it can be replayed or deleted. Select picks several
 events to delete; Delete all clears the list. Every delete asks for a second
 tap within CONFIRM_MS instead of a dialog."""
-import time
+import datetime as dt, time
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QScroller,
@@ -135,9 +135,11 @@ class EventsPage(QFrame):
         head.addSpacing(16)
         b = QPushButton("‹  Back"); b.setMinimumHeight(56); b.setFixedWidth(160); b.clicked.connect(self.back.emit); head.addWidget(b)
         root.addLayout(head)
-        note = QLabel("Every ring with its recording (length: Settings › Camera), saved on the Pi's SD card for 30 days. "
-                      "Tap one to play it.")
-        note.setObjectName("secondary"); root.addWidget(note)
+        self.filter = None  # (first date, last date, label) when only some days are shown
+        row = QHBoxLayout()
+        self.note = QLabel(); self.note.setObjectName("secondary"); row.addWidget(self.note, 1)
+        self.all_btn = QPushButton("Show all"); self.all_btn.setMinimumHeight(48); self.all_btn.setFixedWidth(160)
+        self.all_btn.clicked.connect(lambda: self.set_filter(None)); row.addWidget(self.all_btn); root.addLayout(row)
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.NoFrame)
         QScroller.grabGesture(self.scroll.viewport(), QScroller.LeftMouseButtonGesture); root.addWidget(self.scroll, 1)
         recorder.saved.connect(lambda _e: self.isVisible() and self.refresh())
@@ -145,11 +147,20 @@ class EventsPage(QFrame):
     def refresh(self):
         body = QWidget(); grid = QGridLayout(body); grid.setSpacing(16); grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         entries = sorted(self.rec.entries, key=lambda e: e["time"], reverse=True); self.cards = []
+        if self.filter:
+            first, last, label = self.filter
+            entries = [e for e in entries if first <= dt.date.fromtimestamp(e["time"]) <= last]
+            self.note.setText(f"Events from {label}: {len(entries)}")
+        else:
+            self.note.setText("Every ring with its recording (length: Settings › Camera), saved on the Pi's SD card "
+                              "for 30 days. Tap one to play it.")
+        self.all_btn.setVisible(self.filter is not None)
         for i, e in enumerate(entries):
             c = Card(e); c.setCheckable(self.selecting); c.clicked.connect(lambda _=False, c=c: self.tap(c))
             grid.addWidget(c, i // COLUMNS, i % COLUMNS); self.cards.append(c)
         if not entries:
-            l = QLabel("No rings yet. Each ring appears here with its recording."); l.setObjectName("secondary"); grid.addWidget(l, 0, 0)
+            l = QLabel(f"No rings {'on those days' if self.filter else 'yet. Each ring appears here with its recording'}.")
+            l.setObjectName("secondary"); grid.addWidget(l, 0, 0)
         self.scroll.setWidget(body); self.update_buttons()
 
     def tap(self, card):
@@ -179,6 +190,14 @@ class EventsPage(QFrame):
 
     def remove(self, entry):
         self.rec.delete(entry); self.refresh()
+
+    def set_filter(self, days):
+        """Only events between two dates (inclusive): (first, last, label), or None for all."""
+        self.filter = days; self.selecting = False
+        if self.isVisible(): self.refresh()
+
+    def latest_with_video(self):
+        return next((e for e in sorted(self.rec.entries, key=lambda e: e["time"], reverse=True) if e.get("video")), None)
 
     def showEvent(self, e):
         super().showEvent(e); self.selecting = False; self.refresh()

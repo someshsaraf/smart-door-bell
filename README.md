@@ -110,6 +110,10 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
 - 🚪 **Visitor alert** — live VIGI camera feed (RTSP) filling the screen, countdown and a big **STOP** that also returns the doorbell to its main screen
+- 🎙️ **Voice commands, all on the Pi** — tap ◉ (bottom left) and say *"Stop the bell"*, *"Mute the bell for an hour"*,
+  *"Show me all events"*, *"Show events from yesterday / last Monday / 20 October / this week"*, *"Play the last
+  recording"*, *"Who is at the front door"*, *"Go home"*. Speech recognition is Whisper on the Pi's CPU (~2 s per
+  command, nothing sent to the cloud). Needs a USB microphone; the Bluetooth speaker's microphone is never used
 - 📷 **Camera setup on the screen** — finds the camera on the network, takes its login, tests it with a snapshot
 - 🎬 **Ring recordings** — every press saves the camera from **3–5 s before the press** to 5 s after it (5–60 s under
   Settings → Camera) onto the Pi's SD card, full quality without re-encoding. The last minute of the camera is kept

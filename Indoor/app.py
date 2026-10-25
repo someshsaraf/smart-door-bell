@@ -34,6 +34,7 @@ from notify import Notifier
 import camera_cfg
 from recorder import Recorder, CLIP_S
 from events_ui import EventsPage
+from assistant import Assistant
 
 ROOT = Path(__file__).resolve().parent
 CFG = json.loads((ROOT / "config.json").read_text())
@@ -455,11 +456,20 @@ class Window(QWidget):
         self.events_page=EventsPage(self.recorder)
         self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
         self.events_page.back.connect(lambda: self.stack.setCurrentWidget(self.home))
-        self.home.open_events.connect(lambda: self.stack.setCurrentWidget(self.events_page))
+        self.home.open_events.connect(lambda: (self.events_page.set_filter(None), self.stack.setCurrentWidget(self.events_page)))
         for page in (self.home, self.ring, self.settings, self.events_page): self.stack.addWidget(page)
         self.home.open_settings.connect(lambda: self.stack.setCurrentWidget(self.settings))
         self.settings.back.connect(lambda: (self.audio.stop(), self.stack.setCurrentWidget(self.home)))
         layout=QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.addWidget(self.stack)
+        # Voice: a round button floating over every page, and a bubble saying what was heard and done.
+        self.muted_until=0.0
+        self.assistant=Assistant()
+        self.mic=QPushButton("◉",self); self.mic.setObjectName("mic"); self.mic.setFixedSize(84,84); self.mic.clicked.connect(self.assistant.listen)
+        self.bubble=QLabel("",self); self.bubble.setObjectName("bubble"); self.bubble.setAlignment(Qt.AlignCenter); self.bubble.hide()
+        self.bubble_timer=QTimer(self); self.bubble_timer.setSingleShot(True); self.bubble_timer.timeout.connect(self.bubble.hide)
+        self.assistant.state.connect(self.on_voice_state); self.assistant.heard.connect(lambda t: self.say(f"“{t}”" if t else "…", 0))
+        self.assistant.command.connect(self.on_voice_command)
+        self.assistant.unknown.connect(lambda t: self.say(f"“{t}” · sorry, I can't do that yet" if t else "Sorry, I didn't catch that"))
         self.ring.stop.connect(lambda: self.stop_ring("TOUCH"))
         self.ring.talk.connect(self.toggle_call)
         self.intercom.state.connect(lambda note: self.ring.set_call(True, note))
@@ -529,6 +539,46 @@ class Window(QWidget):
             if self.active: return  # already ringing: discard until the timer has run out
             self.start_ring(seconds,"MQTT",data.get("event_id"))
         except Exception as e: self.home.add_event("Invalid MQTT command: "+str(e))
+    # ---------- voice ----------
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.mic.move(24, self.height()-self.mic.height()-24); self.mic.raise_()
+        self.place_bubble()
+    def place_bubble(self):
+        self.bubble.adjustSize(); w=min(self.width()-240, max(420, self.bubble.width()+60))
+        self.bubble.setFixedSize(w, 72); self.bubble.move((self.width()-w)//2, self.height()-72-32); self.bubble.raise_()
+    def say(self, text, hide_after=4000):
+        """Shows the bubble; hide_after 0 keeps it up (more is coming)."""
+        self.bubble.setText(text); self.bubble.show(); self.place_bubble(); self.bubble_timer.stop()
+        if hide_after: self.bubble_timer.start(hide_after)
+    def on_voice_state(self, state):
+        self.mic.setProperty("listening", state=="listening"); self.mic.style().unpolish(self.mic); self.mic.style().polish(self.mic)
+        if state=="listening": self.say("Listening…", 0)
+        elif state=="thinking": self.say("…", 0)
+        elif state: self.say(state)
+    def on_voice_command(self, action, args, reply):
+        self.say(reply)
+        if action=="stop":
+            if self.active: self.stop_ring("TOUCH")
+            else: self.audio.stop()
+        elif action=="mute":
+            self.muted_until=time.monotonic()+args*60; self.audio.stop()
+            self.home.add_event(f"Bell muted until {time.strftime('%I:%M %p', time.localtime(time.time()+args*60)).lstrip('0')}")
+        elif action=="unmute":
+            self.muted_until=0.0; self.home.add_event("Bell on again")
+        elif action=="events":
+            self.events_page.set_filter(args); self.stack.setCurrentWidget(self.events_page)
+        elif action=="play_last":
+            e=self.events_page.latest_with_video()
+            if not e: self.say("There is no recording yet"); return
+            self.events_page.set_filter(None); self.stack.setCurrentWidget(self.events_page); self.events_page.open(e)
+        elif action=="door":
+            if not self.active: self.open_door()
+        elif action=="home":
+            for player in self.findChildren(QFrame, "player"): player.close_player()
+            if not self.active: self.stop_camera(); self.stack.setCurrentWidget(self.home)
+        elif action=="settings":
+            self.stack.setCurrentWidget(self.settings)
     def open_door(self):
         """Front door tile: live camera and the intercom, no ring."""
         if self.active: return
@@ -569,7 +619,9 @@ class Window(QWidget):
         self.ring.set_mode(True); self.ring.set_call(self.intercom.active)
         self.ring.count.setText(self.fmt(seconds)); self.ring.subtitle.setText(f"Bell is playing · {source}")
         self.stack.setCurrentWidget(self.ring); self.start_camera()
-        if not self.intercom.active: self.audio.play()  # no bell tone over a call
+        if self.intercom.active: pass  # no bell tone over a call
+        elif time.monotonic() < self.muted_until: self.home.add_event("Bell muted: no chime")
+        else: self.audio.play()
         self.active=True; self.home.add_event(f"Doorbell started ({seconds}s)")
         if source=="MQTT":  # a real press: record it (Events page)
             self.recorder.record("ring", SETTINGS.get("record_seconds", CLIP_S))  # with 3 s from before the press
@@ -650,6 +702,10 @@ STYLE = Template("""
     QLabel#pageTitle {font-size:30px;font-weight:700;}
     QPushButton#eventCard {background:$panel;border:1px solid $line;border-radius:18px;padding:0;}
     QPushButton#eventCard:pressed {background:$button;}
+    QPushButton#mic {background:rgba(10,16,26,170);color:#ffffff;border:2px solid rgba(255,255,255,90);border-radius:42px;font-size:40px;padding:0;}
+    QPushButton#mic:pressed {background:$accent;}
+    QPushButton#mic[listening="true"] {background:#e5484d;border-color:#ffffff;}
+    QLabel#bubble {background:rgba(10,16,26,215);color:#ffffff;border:1px solid rgba(255,255,255,70);border-radius:36px;font-size:24px;padding:0 28px;}
     QPushButton#eventCard:checked {background:$button;border:3px solid $accent;}
     QLabel#eventPic {background:#000;border-radius:12px;color:$muted;}
     QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;}

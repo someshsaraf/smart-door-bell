@@ -22,3 +22,6 @@ __pycache__/
 .vscode/
 # ring recordings (video of visitors) stay on the Pi
 Indoor/recordings/
+# the dashboard's Python environment (voice packages) and downloaded models
+Indoor/.venv/
+Indoor/models/
