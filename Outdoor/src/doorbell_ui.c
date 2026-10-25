@@ -26,6 +26,7 @@
 #include "lv_vendor.h"
 #include "board_com_api.h"
 #include "doorbell_net.h"
+#include "doorbell_sound.h"
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
@@ -51,12 +52,13 @@ typedef enum { ENTRY_WIFI_PASSWORD, ENTRY_BROKER } entry_mode_t;
 typedef struct {
     const char *name;
     uint32_t bg_top, bg_bottom, text, muted, card, card_border, pressed, accent, on_accent, bell;
+    uint8_t glow; /* peak opacity of the background glow: bright on black, a pastel tint on white */
 } theme_t;
 
 static const theme_t themes[] = {
-    {"Clean & Light", 0xFFFFFF, 0xDCEBFA, 0x173B5C, 0x5B7894, 0xFFFFFF, 0xC9DCEF, 0xE3EEF9, 0x2F80ED, 0xFFFFFF, 0},
+    {"Clean & Light", 0xFFFFFF, 0xDCEBFA, 0x173B5C, 0x5B7894, 0xFFFFFF, 0xC9DCEF, 0xE3EEF9, 0x2F80ED, 0xFFFFFF, 0, 70},
     /* Near-black background: AMOLED pixels are off, which also saves power. */
-    {"Midnight & Gold", 0x1B2533, 0x000000, 0xF2F5F8, 0x9AA8B8, 0x1C2735, 0x33445A, 0x2A3A4F, 0xD4A537, 0x14100A, 1},
+    {"Midnight & Gold", 0x1B2533, 0x000000, 0xF2F5F8, 0x9AA8B8, 0x1C2735, 0x33445A, 0x2A3A4F, 0xD4A537, 0x14100A, 1, 150},
 };
 #define THEME_COUNT (sizeof(themes) / sizeof(themes[0]))
 
@@ -89,6 +91,7 @@ static uint32_t ring_seconds = 30;
 enum { STYLE_CLASSIC, STYLE_BUTTON, STYLE_TEMPLE, STYLE_HAND, STYLE_TWIN, STYLE_FLAT, STYLE_COUNT };
 static const char *const style_names[STYLE_COUNT] = {"Classic", "Push button", "Temple", "Hand bell", "Twin bells", "Flat"};
 static uint32_t bell_style = STYLE_CLASSIC;
+static bool glow_on = true; /* aurora glow behind the bell (Appearance page) */
 
 static page_t page = HOME;
 static lv_obj_t *pages[PAGE_COUNT];
@@ -104,6 +107,9 @@ static lv_style_t st_accent, st_accent_pressed, st_wave, st_halo, st_progress, s
 static lv_obj_t *btn_img;  /* the push-button disc */
 static lv_obj_t *bell_img; /* the bell symbol on it (swings) */
 static lv_obj_t *halo;     /* pulsing ring around the button while idle */
+static lv_obj_t *glow_blobs[3];
+static lv_obj_t *glow_card;
+static lv_timer_t *glow_timer;
 static lv_obj_t *home_clock, *home_date;
 static lv_obj_t *hold_arc;
 static lv_obj_t *wifi_icon;
@@ -132,10 +138,11 @@ static char entry_ssid[NET_SSID_MAX + 1];
 
 static void save_config(void)
 {
-    uint8_t v[4] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style};
+    uint8_t v[5] = {(uint8_t)theme_idx, (uint8_t)bell_idx, (uint8_t)ring_seconds, (uint8_t)bell_style, (uint8_t)glow_on};
     if (tal_kv_set(KV_UI, v, sizeof(v)) != OPRT_OK)
         PR_ERR("[DOORBELL] saving settings failed");
-    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style); /* keeps the indoor settings page in step */
+    /* keeps the indoor settings page in step */
+    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style, glow_on);
 }
 
 static void load_config(void)
@@ -144,9 +151,11 @@ static void load_config(void)
     size_t len = 0;
     if (tal_kv_get(KV_UI, &v, &len) != OPRT_OK || !v)
         return;
-    if (len >= 3 && v[0] < THEME_COUNT && v[1] < BELL_COLOR_COUNT) { /* 3 bytes before bell styles existed */
+    if (len >= 3 && v[0] < THEME_COUNT && v[1] < BELL_COLOR_COUNT) { /* older firmware saved fewer bytes */
         if (len >= 4 && v[3] < STYLE_COUNT)
             bell_style = v[3];
+        if (len >= 5)
+            glow_on = v[4] != 0;
         theme_idx = v[0];
         bell_idx = v[1];
         for (uint32_t i = 0; i < DURATION_COUNT; i++)
@@ -593,6 +602,27 @@ static void render_glyph(void)
     }
 }
 
+/* ---- background glow ----
+ * One soft white disc with a Gaussian falloff, shown three times and tinted
+ * magenta, cyan and violet by LVGL's image recolouring; a timer only moves and
+ * fades the three, so no pixels are recomputed while it animates. */
+#define GLOW_SIZE 300
+static lv_image_dsc_t glow_dsc;
+static uint8_t *glow_buf;
+static const uint32_t glow_colors[3] = {0xFF2BD6, 0x00E5FF, 0x8C50FF};
+
+static void render_glow(void)
+{
+    const float c = GLOW_SIZE / 2.0f;
+    for (int y = 0; y < GLOW_SIZE; y++) {
+        uint8_t *px = glow_buf + y * GLOW_SIZE * 4;
+        for (int x = 0; x < GLOW_SIZE; x++, px += 4) {
+            float dx = (x + 0.5f - c) / c, dy = (y + 0.5f - c) / c;
+            put_px(px, 1, 1, 1, expf(-4.5f * (dx * dx + dy * dy))); /* ~1 % at the edge */
+        }
+    }
+}
+
 static void init_dsc(lv_image_dsc_t *dsc, uint8_t **buf, int w, int h)
 {
     *buf = lv_malloc(w * h * 4);
@@ -645,7 +675,9 @@ static void init_bell_art(void)
     init_dsc(&glyph_dsc, &glyph_buf, GLYPH_W, GLYPH_H);
     for (uint32_t s = 0; s < STYLE_COUNT; s++)
         init_dsc(&thumb_dsc[s], &thumb_buf[s], THUMB, THUMB);
+    init_dsc(&glow_dsc, &glow_buf, GLOW_SIZE, GLOW_SIZE);
     render_glyph();
+    render_glow();
 }
 
 /* ---------- theme ---------- */
@@ -916,10 +948,14 @@ static void refresh_values(void)
         lv_obj_set_state(swatches[i], LV_STATE_CHECKED, i == bell_idx);
     for (uint32_t i = 0; i < STYLE_COUNT; i++)
         lv_obj_set_state(style_cards[i], LV_STATE_CHECKED, i == bell_style);
+    lv_obj_set_state(glow_card, LV_STATE_CHECKED, glow_on);
+    lv_label_set_text(lv_obj_get_child(glow_card, 0), glow_on ? LV_SYMBOL_EYE_OPEN "  Glow: Aurora" : "Glow: Off");
     for (uint32_t i = 0; i < DURATION_COUNT; i++)
         lv_obj_set_state(duration_btns[i], LV_STATE_CHECKED, durations[i] == ring_seconds);
     refresh_net();
 }
+
+static void apply_glow(void);
 
 static void set_page(page_t p)
 {
@@ -927,6 +963,7 @@ static void set_page(page_t p)
     page = p;
     refresh_values();
     lv_obj_remove_flag(pages[page], LV_OBJ_FLAG_HIDDEN);
+    apply_glow(); /* the glow only runs on the home screen */
 }
 
 /* ---------- ringing animation ---------- */
@@ -954,6 +991,56 @@ static void halo_cb(void *obj, int32_t v)
     lv_obj_set_size((lv_obj_t *)obj, d, d);
     lv_obj_align((lv_obj_t *)obj, LV_ALIGN_TOP_MID, 0, BTN_CY - d / 2);
     lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)(170 * (1000 - v) / 1000), LV_PART_MAIN);
+}
+
+/*
+ * Aurora: the three tinted glows circle the bell on slightly different paths
+ * and breathe in brightness. Idle: one cycle in ~24 s, updated 10x a second
+ * (the motion is slow). Ringing: three times faster, brighter, 30 updates/s.
+ */
+#define GLOW_IDLE_MS 100
+#define GLOW_RING_MS 33
+
+static void glow_tick(lv_timer_t *t)
+{
+    static float phase;
+    const float pi2 = 6.2831853f;
+    uint32_t step = is_ringing ? GLOW_RING_MS : GLOW_IDLE_MS; /* the period apply_glow() set */
+    float boost = is_ringing ? 1.6f : 1.0f;
+
+    (void)t;
+
+    phase += (is_ringing ? 3.0f : 1.0f) * step / 24000.0f;
+    if (phase > 1.0f)
+        phase -= 1.0f;
+    for (int i = 0; i < 3; i++) {
+        float a = phase * pi2 + i * 2.1f;
+        float x = SCREEN_SIZE / 2.0f + 95.0f * cosf(a) * (i == 2 ? 0.6f : 1.0f);
+        float y = BTN_CY + 70.0f * sinf(a * (i == 1 ? 2.0f : 1.0f)); /* cyan loops twice as often */
+        float k = (0.62f + 0.38f * sinf(2.0f * a + i)) * boost;   /* breathing */
+        lv_obj_set_pos(glow_blobs[i], (int32_t)x - GLOW_SIZE / 2, (int32_t)y - GLOW_SIZE / 2);
+        lv_obj_set_style_image_opa(glow_blobs[i], (lv_opa_t)fminf(255.0f, themes[theme_idx].glow * k), LV_PART_MAIN);
+    }
+}
+
+/* Shows or hides the glow and sets its pace; call after any change to theme,
+ * glow setting, page or ringing state. */
+static void apply_glow(void)
+{
+    bool run = glow_on && page == HOME;
+    for (int i = 0; i < 3; i++) {
+        if (run)
+            lv_obj_remove_flag(glow_blobs[i], LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(glow_blobs[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!run) {
+        lv_timer_pause(glow_timer);
+        return;
+    }
+    lv_timer_set_period(glow_timer, is_ringing ? GLOW_RING_MS : GLOW_IDLE_MS);
+    lv_timer_resume(glow_timer);
+    glow_tick(glow_timer);
 }
 
 static void set_halo(bool run)
@@ -1006,6 +1093,7 @@ static void set_ring_animation(bool run)
     lv_anim_t a;
 
     set_halo(!run && bell_style == STYLE_BUTTON); /* the sound waves take over while ringing */
+    apply_glow();                                 /* faster and brighter while ringing */
 
     lv_anim_delete(bell_img, swing_cb);
     lv_anim_delete(bell_img, settle_cb);
@@ -1074,6 +1162,7 @@ static void start_ring(void)
         return; /* repeated presses by a visitor do not restart or cancel it */
     is_ringing = true;
     net_publish_start(ring_seconds);
+    sound_chime(); /* the visitor hears that it rang */
     set_ring_animation(true);
     ring_timer = lv_timer_create(timeout_cb, ring_seconds * 1000, NULL);
     lv_timer_set_repeat_count(ring_timer, 1);
@@ -1120,12 +1209,15 @@ static void apply_remote_settings(void)
                  (uint32_t)ns.remote_style != bell_style;
     if (style)
         bell_style = ns.remote_style;
-    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, ring %us", (unsigned)theme_idx,
-              (unsigned)bell_idx, (unsigned)bell_style, (unsigned)ring_seconds);
+    if (ns.remote_glow >= 0)
+        glow_on = ns.remote_glow != 0;
+    PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, glow %d, ring %us",
+              (unsigned)theme_idx, (unsigned)bell_idx, (unsigned)bell_style, glow_on, (unsigned)ring_seconds);
     if (art || style)
         update_bell_art(art); /* thumbnails only change with the colour */
     if (style)
         apply_bell_style();
+    apply_glow();
     apply_theme();
     refresh_values();
     save_config();
@@ -1232,6 +1324,15 @@ static void swatch_cb(lv_event_t *e)
     bell_idx = (uint32_t)(intptr_t)lv_event_get_user_data(e);
     update_bell_art(true);
     apply_theme();
+    refresh_values();
+    save_config();
+}
+
+static void glow_cb(lv_event_t *e)
+{
+    (void)e;
+    glow_on = !glow_on;
+    apply_glow();
     refresh_values();
     save_config();
 }
@@ -1343,6 +1444,18 @@ static void create_home(lv_obj_t *p)
     lv_obj_add_event_cb(p, home_touch_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(p, home_touch_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(p, home_touch_cb, LV_EVENT_PRESS_LOST, NULL);
+
+    /* Created first so they sit behind everything else on the page. */
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *g = lv_image_create(p);
+        lv_image_set_src(g, &glow_dsc);
+        lv_obj_remove_flag(g, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_image_recolor(g, lv_color_hex(glow_colors[i]), LV_PART_MAIN);
+        lv_obj_set_style_image_recolor_opa(g, LV_OPA_COVER, LV_PART_MAIN);
+        glow_blobs[i] = g;
+    }
+    glow_timer = lv_timer_create(glow_tick, GLOW_IDLE_MS, NULL);
+    lv_timer_pause(glow_timer);
 
     wifi_icon = add_text(p, &lv_font_montserrat_22, 50, LV_SYMBOL_WIFI);
     lv_obj_add_style(wifi_icon, &st_muted, LV_PART_MAIN);
@@ -1568,6 +1681,13 @@ static void create_appearance(lv_obj_t *p)
         lv_obj_align(s, LV_ALIGN_TOP_MID, -90 + (int32_t)i * 60, 244);
         swatches[i] = s;
     }
+
+    /* glow on/off: one toggle card, its label says the current state */
+    glow_card = add_card(p, 170, 38, glow_cb, NULL);
+    lv_obj_align(glow_card, LV_ALIGN_TOP_MID, 0, 300);
+    lv_obj_t *l = lv_label_create(glow_card);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_center(l);
 }
 
 /* Bell style picker: 3 x 2 cards, each a thumbnail drawn in the current bell colour. */
@@ -1659,9 +1779,10 @@ void user_main(void)
     tal_workq_init();
     tal_time_service_init();
     board_register_hardware();
+    sound_init();
     load_config();
     net_start();
-    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style);
+    net_report_settings(theme_idx, bell_idx, ring_seconds, bell_style, glow_on);
 
     lv_vendor_init(DISPLAY_NAME);
     lv_vendor_disp_lock();

@@ -221,6 +221,7 @@ class OutdoorPanel(QWidget):
         for b, (_, color) in zip(self.bell_btns, OUTDOOR_BELLS): b.setIcon(dot_icon(color)); b.setIconSize(QSize(22, 22))
         icons = [next(BELL_ICONS.glob(f"{i}_*.png"), None) for i in range(len(OUTDOOR_STYLES))]
         self.style_btns = choice_row("BELL STYLE", OUTDOOR_STYLES, "bell_style", range(len(OUTDOOR_STYLES)), cols=3, icons=icons, h=84)
+        self.glow_btns = choice_row("BACKGROUND GLOW", ["Off", "Aurora (magenta · cyan)"], "glow", [False, True])
         self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
 
         lay.addWidget(label("WI-FI", "section"))
@@ -277,6 +278,7 @@ class OutdoorPanel(QWidget):
         for btns, key, values in [(self.theme_btns, "theme", list(range(len(OUTDOOR_THEMES)))),
                                   (self.bell_btns, "bell_color", list(range(len(OUTDOOR_BELLS)))),
                                   (self.style_btns, "bell_style", list(range(len(OUTDOOR_STYLES)))),
+                                  (self.glow_btns, "glow", [False, True]),
                                   (self.ring_btns, "ring_seconds", OUTDOOR_DURATIONS)]:
             for b, v in zip(btns, values): b.setChecked(s.get(key) == v)
         self.wifi_now.setText(f"Connected to {s['wifi_ssid']} ({s.get('ip') or 'no address'})" if s.get("wifi_ssid") else "Not reported yet")

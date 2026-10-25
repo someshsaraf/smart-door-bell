@@ -45,6 +45,7 @@ static struct {
     char ssid[NET_SSID_MAX + 1], pswd[NET_PSWD_MAX + 1];
     bool report; /* UI settings below changed: republish the state */
     uint32_t theme, bell_color, ring_seconds, bell_style;
+    bool glow;
 } req;
 static volatile int wifi_event = -1; /* last WF_EVENT_E from the driver, -1 = none */
 
@@ -437,6 +438,7 @@ static void publish_state(void)
     cJSON_AddNumberToObject(o, "bell_color", req.bell_color);
     cJSON_AddNumberToObject(o, "ring_seconds", req.ring_seconds);
     cJSON_AddNumberToObject(o, "bell_style", req.bell_style);
+    cJSON_AddBoolToObject(o, "glow", req.glow);
     cJSON_AddStringToObject(o, "wifi_ssid", st.ssid);
     cJSON_AddStringToObject(o, "ip", st.ip);
     cJSON_AddStringToObject(o, "broker", st.broker);
@@ -552,14 +554,16 @@ static void handle_config(const char *json)
     const cJSON *theme = cJSON_GetObjectItem(j, "theme"), *bell = cJSON_GetObjectItem(j, "bell_color");
     const cJSON *ring_s = cJSON_GetObjectItem(j, "ring_seconds"), *wifi = cJSON_GetObjectItem(j, "wifi");
     const cJSON *broker = cJSON_GetObjectItem(j, "broker"), *cmd = cJSON_GetObjectItem(j, "command");
-    const cJSON *style = cJSON_GetObjectItem(j, "bell_style");
+    const cJSON *style = cJSON_GetObjectItem(j, "bell_style"), *glow = cJSON_GetObjectItem(j, "glow");
 
-    if (cJSON_IsNumber(theme) || cJSON_IsNumber(bell) || cJSON_IsNumber(ring_s) || cJSON_IsNumber(style)) {
+    if (cJSON_IsNumber(theme) || cJSON_IsNumber(bell) || cJSON_IsNumber(ring_s) || cJSON_IsNumber(style) ||
+        cJSON_IsBool(glow)) {
         tal_mutex_lock(lock);
         st.remote_theme = cJSON_IsNumber(theme) ? theme->valueint : -1;
         st.remote_bell = cJSON_IsNumber(bell) ? bell->valueint : -1;
         st.remote_ring = cJSON_IsNumber(ring_s) ? ring_s->valueint : -1;
         st.remote_style = cJSON_IsNumber(style) ? style->valueint : -1;
+        st.remote_glow = cJSON_IsBool(glow) ? cJSON_IsTrue(glow) : -1;
         st.remote_seq++;
         tal_mutex_unlock(lock);
     }
@@ -852,9 +856,10 @@ void net_publish_start(uint32_t seconds)
     tal_mutex_unlock(lock);
 }
 
-void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds, uint32_t bell_style)
+void net_report_settings(uint32_t theme, uint32_t bell_color, uint32_t ring_seconds, uint32_t bell_style, bool glow)
 {
     tal_mutex_lock(lock);
+    req.glow = glow;
     req.theme = theme;
     req.bell_color = bell_color;
     req.ring_seconds = ring_seconds;

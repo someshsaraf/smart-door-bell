@@ -148,5 +148,6 @@ without them after flashing, set them again as in step 6. Useful log lines start
 |---|---|
 | [`src/doorbell_ui.c`](src/doorbell_ui.c) | LVGL screens, on-device bell rendering, ring animation, touch handling, settings pages, keyboard |
 | [`src/doorbell_net.c`](src/doorbell_net.c) / [`.h`](src/doorbell_net.h) | Wi-Fi scan/connect/save, NTP clock, minimal MQTT client, ring delivery with ack and resend, remote settings |
+| [`src/doorbell_sound.c`](src/doorbell_sound.c) / [`.h`](src/doorbell_sound.h) | Ding-dong chime on the board speaker (synthesised at start-up, played on its own thread) |
 | [`app_default.config`](app_default.config) | Board and feature configuration |
 | [`config/`](config) | TuyaOpen sample configs of other T5AI boards (not used by this build) |
