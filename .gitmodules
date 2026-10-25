@@ -1,0 +1,4 @@
+[submodule "sdk/TuyaOpen"]
+	path = sdk/TuyaOpen
+	url = https://github.com/tuya/TuyaOpen.git
+	shallow = false

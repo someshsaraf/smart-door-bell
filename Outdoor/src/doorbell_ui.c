@@ -24,6 +24,7 @@
 #include "tkl_output.h"
 #include "lvgl.h"
 #include "lv_vendor.h"
+#include "lv_port_disp.h" /* disp_set_backlight, disp_enable_update / disp_disable_update */
 #include "board_com_api.h"
 #include "doorbell_net.h"
 #include "doorbell_sound.h"
@@ -138,6 +139,23 @@ static bool fest_tones;                   /* play the festival chime instead of 
 static uint32_t loaded_chime = CHIME_ALL; /* the chime the sound module has ready */
 /* Festivals page, saved: follow the indoor unit's festivals at all, and play their chimes. */
 static bool fest_look_on = true, fest_chime_on = true;
+
+/* Night: the screen is off from night_from to night_to (local hours; set from
+ * the indoor unit, saved). A touch lights it for WAKE_MS; that first touch only
+ * wakes it, never rings. */
+static bool night_on = true;
+static uint32_t night_from = 23, night_to = 6;
+#define WAKE_MS 30000
+#ifndef CONFIG_DISPLAY_DEFAULT_BRIGHTNESS
+#define CONFIG_DISPLAY_DEFAULT_BRIGHTNESS 80
+#endif
+static bool screen_off;
+static lv_obj_t *wake_catcher; /* invisible, over everything while the screen is off */
+/* Screen turned on or off from the indoor unit: holds until the schedule itself
+ * changes (night starts or ends), or a touch / ring wakes a screen turned off. */
+enum { SCREEN_AUTO, SCREEN_FORCED_ON, SCREEN_FORCED_OFF };
+static int screen_force = SCREEN_AUTO;
+static uint32_t screen_forced_at; /* lv_tick_get() of the last "screen_off" */
 static const festival_t *fest_trial; /* tried on the Festivals page, until fest_trial_end */
 static uint32_t fest_trial_end;
 #define FEST_TRIAL_MS 60000
@@ -227,15 +245,20 @@ static void report_settings(void)
                         .chime = chime_idx,
                         .volume = chime_volume,
                         .glow = glow_on,
-                        .chime_repeat = chime_repeat};
+                        .chime_repeat = chime_repeat,
+                        .night_on = night_on,
+                        .night_from = night_from,
+                        .night_to = night_to,
+                        .screen_lit = !screen_off};
     net_report_settings(&s);
 }
 
 static void save_config(void)
 {
-    uint8_t v[10] = {(uint8_t)theme_idx, (uint8_t)bell_idx,   (uint8_t)ring_seconds, (uint8_t)bell_style,
-                     (uint8_t)glow_on,   (uint8_t)chime_idx,  (uint8_t)chime_repeat, chime_volume,
-                     (uint8_t)fest_look_on, (uint8_t)fest_chime_on};
+    uint8_t v[13] = {(uint8_t)theme_idx,    (uint8_t)bell_idx,      (uint8_t)ring_seconds, (uint8_t)bell_style,
+                     (uint8_t)glow_on,      (uint8_t)chime_idx,     (uint8_t)chime_repeat, chime_volume,
+                     (uint8_t)fest_look_on, (uint8_t)fest_chime_on, (uint8_t)night_on,     (uint8_t)night_from,
+                     (uint8_t)night_to};
     if (tal_kv_set(KV_UI, v, sizeof(v)) != OPRT_OK)
         PR_ERR("[DOORBELL] saving settings failed");
     report_settings();
@@ -260,6 +283,11 @@ static void load_config(void)
         if (len >= 10) {
             fest_look_on = v[8] != 0;
             fest_chime_on = v[9] != 0;
+        }
+        if (len >= 13 && v[11] < 24 && v[12] < 24) {
+            night_on = v[10] != 0;
+            night_from = v[11];
+            night_to = v[12];
         }
         theme_idx = v[0];
         bell_idx = v[1];
@@ -1156,7 +1184,7 @@ static void glow_tick(lv_timer_t *t)
  * glow setting, page or ringing state. */
 static void apply_glow(void)
 {
-    bool run = glow_on && page == HOME;
+    bool run = glow_on && page == HOME && !screen_off;
     for (int i = 0; i < 3; i++) {
         if (run)
             lv_obj_remove_flag(glow_blobs[i], LV_OBJ_FLAG_HIDDEN);
@@ -1362,6 +1390,12 @@ static void apply_remote_settings(void)
         chime_volume = (uint8_t)ns.remote_volume;
         sound_set_volume(chime_volume);
     }
+    if (ns.remote_night_on >= 0)
+        night_on = ns.remote_night_on != 0;
+    if (ns.remote_night_from >= 0 && ns.remote_night_from < 24)
+        night_from = ns.remote_night_from;
+    if (ns.remote_night_to >= 0 && ns.remote_night_to < 24)
+        night_to = ns.remote_night_to;
     PR_NOTICE("[DOORBELL] settings from indoor unit: theme %u, bell %u, style %u, glow %d, chime %u%s vol %u, ring %us",
               (unsigned)theme_idx, (unsigned)bell_idx, (unsigned)bell_style, glow_on, (unsigned)chime_idx,
               chime_repeat ? " repeating," : ",", (unsigned)chime_volume, (unsigned)ring_seconds);
@@ -1409,6 +1443,80 @@ static void check_festival(void)
     refresh_values();
 }
 
+/* ---------- night: screen off ---------- */
+
+static bool night_now(void)
+{
+    if (!night_on || night_from == night_to || !ns.time_synced)
+        return false; /* off, an empty window, or a clock that is not set: never dark */
+    TIME_T t = tal_time_get_posix() + DOORBELL_UTC_OFFSET_S;
+    POSIX_TM_S tm;
+    tal_time_gmtime_r(&t, &tm);
+    uint32_t h = (uint32_t)tm.tm_hour;
+    if (night_from > night_to) /* over midnight, e.g. 23 to 6 */
+        return h >= night_from || h < night_to;
+    return h >= night_from && h < night_to;
+}
+
+/*
+ * The brightness command shares the panel's QSPI bus with the picture, which a
+ * separate display task sends whenever LVGL redraws (on the home screen the glow
+ * redraws ~10x a second). The driver does not keep the two apart: a command sent
+ * during a frame is lost, and "on" would then leave the panel at its dimmest
+ * level. So drawing is paused, the frame in flight is given time to finish, and
+ * the command is sent twice; drawing stays paused when going dark.
+ */
+static void set_brightness_quietly(uint8_t level)
+{
+    lv_display_t *d = lv_display_get_default();
+    disp_disable_update(d);
+    tal_system_sleep(60); /* a full 466x466 frame takes ~25 ms */
+    disp_set_backlight(d, level);
+    tal_system_sleep(20);
+    disp_set_backlight(d, level);
+}
+
+static void set_screen(bool on)
+{
+    if (on != screen_off)
+        return; /* already so */
+    lv_display_t *d = lv_display_get_default();
+    screen_off = !on;
+    if (on) {
+        lv_obj_add_flag(wake_catcher, LV_OBJ_FLAG_HIDDEN);
+        set_brightness_quietly(CONFIG_DISPLAY_DEFAULT_BRIGHTNESS);
+        disp_enable_update(d);
+        lv_obj_invalidate(lv_screen_active()); /* redraw everything missed while dark */
+    } else {
+        if (page != HOME)
+            set_page(HOME); /* no settings page left open in the dark */
+        lv_obj_remove_flag(wake_catcher, LV_OBJ_FLAG_HIDDEN);
+        set_brightness_quietly(0); /* also stops drawing while dark */
+    }
+    apply_glow();
+    PR_NOTICE("[DOORBELL] screen %s", on ? "on" : "off");
+    report_settings(); /* the indoor unit shows whether it is lit */
+}
+
+/* Dark at night unless ringing, in a call, or touched within WAKE_MS; the
+ * indoor unit can turn it on or off until the schedule changes. */
+static void night_tick(void)
+{
+    static int was_night = -1;
+    bool night = night_now();
+    if (was_night != -1 && night != (bool)was_night)
+        screen_force = SCREEN_AUTO; /* night started or ended: back to the schedule */
+    was_night = night;
+    uint32_t idle = lv_display_get_inactive_time(NULL);
+    bool busy = is_ringing || talk_active();
+    if (screen_force == SCREEN_FORCED_ON)
+        set_screen(true);
+    else if (screen_force == SCREEN_FORCED_OFF)
+        set_screen(busy || (idle < WAKE_MS && idle < lv_tick_elaps(screen_forced_at))); /* touched since */
+    else
+        set_screen(!night || busy || idle < WAKE_MS);
+}
+
 /* Network status arrives from the net thread; picked up here on the LVGL thread. */
 static void net_poll_cb(lv_timer_t *t)
 {
@@ -1425,6 +1533,12 @@ static void net_poll_cb(lv_timer_t *t)
     if (ns.remote_seq != prev.remote_seq)
         apply_remote_settings();
     check_festival();
+    if (ns.screen_cmd_seq != prev.screen_cmd_seq) {
+        screen_force = ns.screen_cmd_on ? SCREEN_FORCED_ON : SCREEN_FORCED_OFF;
+        screen_forced_at = lv_tick_get();
+        PR_NOTICE("[DOORBELL] screen turned %s from the indoor unit", ns.screen_cmd_on ? "on" : "off");
+    }
+    night_tick();
     if (ns.talk_seq != prev.talk_seq) {
         if (ns.talk_on && ns.talk_host[0])
             talk_start(ns.talk_host, ns.talk_port);
@@ -2062,6 +2176,12 @@ static void create_ui(void)
                        LV_SYMBOL_EDIT "  Set address", broker_cb);
     create_wifi_list(pages[WIFI_LIST]);
     create_entry(pages[ENTRY]);
+
+    /* Over every page while the screen is off: takes the waking touch, so it never rings. */
+    wake_catcher = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(wake_catcher);
+    lv_obj_set_size(wake_catcher, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(wake_catcher, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
 
     net_get_status(&ns);
     apply_theme();

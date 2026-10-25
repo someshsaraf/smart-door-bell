@@ -627,6 +627,11 @@ static void publish_state(void)
     cJSON_AddNumberToObject(o, "chime", s->chime);
     cJSON_AddBoolToObject(o, "chime_repeat", s->chime_repeat);
     cJSON_AddNumberToObject(o, "volume", s->volume);
+    cJSON *night = cJSON_AddObjectToObject(o, "screen_off");
+    cJSON_AddBoolToObject(night, "enabled", s->night_on);
+    cJSON_AddNumberToObject(night, "from", s->night_from);
+    cJSON_AddNumberToObject(night, "to", s->night_to);
+    cJSON_AddBoolToObject(o, "screen_lit", s->screen_lit);
     if (change_result[0])
         cJSON_AddStringToObject(o, "network_change", change_result);
     cJSON_AddStringToObject(o, "wifi_ssid", st.ssid);
@@ -809,9 +814,13 @@ static void handle_config(const char *json)
     const cJSON *style = cJSON_GetObjectItem(j, "bell_style"), *glow = cJSON_GetObjectItem(j, "glow");
     const cJSON *chime = cJSON_GetObjectItem(j, "chime"), *rep = cJSON_GetObjectItem(j, "chime_repeat");
     const cJSON *vol = cJSON_GetObjectItem(j, "volume");
+    const cJSON *night = cJSON_GetObjectItem(j, "screen_off"); /* {"enabled":true,"from":23,"to":6} */
+    const cJSON *n_on = cJSON_IsObject(night) ? cJSON_GetObjectItem(night, "enabled") : NULL;
+    const cJSON *n_from = cJSON_IsObject(night) ? cJSON_GetObjectItem(night, "from") : NULL;
+    const cJSON *n_to = cJSON_IsObject(night) ? cJSON_GetObjectItem(night, "to") : NULL;
 
     if (cJSON_IsNumber(theme) || cJSON_IsNumber(bell) || cJSON_IsNumber(ring_s) || cJSON_IsNumber(style) ||
-        cJSON_IsBool(glow) || cJSON_IsNumber(chime) || cJSON_IsBool(rep) || cJSON_IsNumber(vol)) {
+        cJSON_IsBool(glow) || cJSON_IsNumber(chime) || cJSON_IsBool(rep) || cJSON_IsNumber(vol) || cJSON_IsObject(night)) {
         tal_mutex_lock(lock);
         st.remote_theme = cJSON_IsNumber(theme) ? theme->valueint : -1;
         st.remote_bell = cJSON_IsNumber(bell) ? bell->valueint : -1;
@@ -821,6 +830,9 @@ static void handle_config(const char *json)
         st.remote_chime = cJSON_IsNumber(chime) ? chime->valueint : -1;
         st.remote_repeat = cJSON_IsBool(rep) ? cJSON_IsTrue(rep) : -1;
         st.remote_volume = cJSON_IsNumber(vol) ? vol->valueint : -1;
+        st.remote_night_on = cJSON_IsBool(n_on) ? cJSON_IsTrue(n_on) : -1;
+        st.remote_night_from = cJSON_IsNumber(n_from) ? n_from->valueint : -1;
+        st.remote_night_to = cJSON_IsNumber(n_to) ? n_to->valueint : -1;
         st.remote_seq++;
         tal_mutex_unlock(lock);
     }
@@ -850,6 +862,12 @@ static void handle_config(const char *json)
     }
     if (cJSON_IsString(cmd) && strcmp(cmd->valuestring, "wifi_scan") == 0)
         remote_scan = true;
+    if (cJSON_IsString(cmd) && (!strcmp(cmd->valuestring, "screen_on") || !strcmp(cmd->valuestring, "screen_off"))) {
+        tal_mutex_lock(lock);
+        st.screen_cmd_on = !strcmp(cmd->valuestring, "screen_on");
+        st.screen_cmd_seq++;
+        tal_mutex_unlock(lock);
+    }
     cJSON_Delete(j);
 }
 

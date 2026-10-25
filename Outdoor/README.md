@@ -15,32 +15,30 @@ Firmware for the round-screen doorbell, built with the [TuyaOpen](https://github
 
 ---
 
-## 1 · Install the TuyaOpen SDK
+## 1 · Get everything (Windows PC)
+
+The TuyaOpen SDK comes with this repository as a submodule (`sdk/TuyaOpen`), pinned to the version the
+firmware is tested with, so no separate SDK checkout is needed:
 
 ```powershell
-git clone https://github.com/tuya/TuyaOpen.git
-cd TuyaOpen
-git config core.longpaths true          # Windows: build paths get long
-. .\export.ps1                          # Linux/macOS: . ./export.sh
-tos.py check                            # verifies tools and submodules
+git clone https://github.com/someshsaraf/smart-door-bell.git
+cd smart-door-bell
+.\setup.ps1                 # once: fetches the SDK, installs its tools, creates the encryption key
 ```
 
-`export.ps1` creates a Python environment and installs the SDK's tools; run it in **every new terminal**
-before using `tos.py`. On Windows, run it from PowerShell.
-
-## 2 · Put this project into the SDK
-
-The firmware must sit **inside** the TuyaOpen tree. The tested location is
-`TuyaOpen/examples/graphics/doorbell`:
+## 2 · Build and flash
 
 ```powershell
-cd examples\graphics
-git clone https://github.com/someshsaraf/smart-door-bell.git doorbell
-cd doorbell\Outdoor
+.\build.ps1                          # → Outdoor\dist\Outdoor_1.0.1\Outdoor_QIO_1.0.1.bin
+.\build.ps1 -Flash COM6              # build and flash (Device Manager › Ports shows the port)
+.\build.ps1 -Flash COM6 -Monitor     # ... and show the doorbell's log (Ctrl+C to stop)
 ```
 
-`Outdoor` is the TuyaOpen *project root* (it has `CMakeLists.txt` and `app_default.config`);
-`tos.py` must always be run from there.
+`build.ps1` prepares the SDK's environment by itself (no `export.ps1` per terminal). To use `tos.py` by
+hand instead: `cd sdk\TuyaOpen; . .\export.ps1; cd ..\..\Outdoor; tos.py build`. `Outdoor` is the TuyaOpen
+*project root* (it has `CMakeLists.txt` and `app_default.config`); `tos.py` runs from there. A checkout that
+lives inside a TuyaOpen tree (the older layout, `TuyaOpen/examples/graphics/doorbell`) still works: `build.ps1`
+then uses that TuyaOpen.
 
 ## 3 · Board configuration
 
@@ -136,7 +134,7 @@ without them after flashing, set them again as in step 6. Useful log lines start
 | Symptom | Fix |
 |---|---|
 | `Not project root [...]` | Run `tos.py` from the `Outdoor` folder. |
-| `can't open file '...\tos.py'` | Run `. .\export.ps1` in the TuyaOpen root first, then use plain `tos.py` — no `..\..\` paths to count. |
+| `can't open file '...\tos.py'` | Use `.\build.ps1`; by hand, run `. .\export.ps1` in `sdk\TuyaOpen` first, then plain `tos.py`. |
 | Checkout or build fails with *Filename too long* (Windows) | `git config core.longpaths true` in both repositories. |
 | Flash cannot open the port | Close any open serial monitor; check the COM number; try another USB cable (data, not charge-only). |
 | Indoor Unit stays **Connecting… / Not reachable** | The Pi's firewall or Wi-Fi isolation blocks port 1883 — see the main [README](../README.md#-good-to-know). |

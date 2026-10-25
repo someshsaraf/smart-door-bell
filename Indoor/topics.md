@@ -30,7 +30,9 @@ Any subset of these fields in one `home/doorbell/outdoor/config` message:
 | `ring_seconds` | `10`, `15`, `30`, `45`, `60` | Ring duration sent with each start |
 | `network` | `{"ssid":"...","password":"...","broker":"192.168.1.102"}` (each optional) | New Wi-Fi and/or indoor unit address, **applied as one change**: saved only if the doorbell joins the Wi-Fi *and* reaches the broker within 60 s, otherwise it returns to its previous Wi-Fi and address. The result appears in the state as `"network_change": "applied"` or `"reverted"` |
 | `wifi`, `broker` | `{"ssid","password"}` / `"192.168.1.102"` | Older separate forms; handled exactly like `network` |
+| `screen_off` | `{"enabled":true,"from":23,"to":6}` (each optional; hours 0–23, local time) | Screen dark between the hours (over midnight when from > to); a touch lights it for 30 s, rings and calls always light it. Default 23 → 6. Reported back in the state as `screen_off`, with `screen_lit` saying whether it is lit now |
 | `command` | `"wifi_scan"` | Scans and answers on `home/doorbell/outdoor/wifi_scan` |
+| `command` | `"screen_on"` / `"screen_off"` | Lights or darkens the screen now; holds until the schedule changes (at the from/to hour), and a touch or ring still wakes a darkened screen |
 
 The outdoor unit saves every change, so it survives a restart. With the doorbell's
 TLS key set up (README, "Good to know") the doorbell connects on port 8883 with

@@ -427,6 +427,29 @@ class OutdoorPanel(QWidget):
         self.volume_btns = choice_row("CHIME VOLUME", [n for n, _ in OUTDOOR_VOLUMES], "volume", [v for _, v in OUTDOOR_VOLUMES])
         self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
 
+        # Screen off at night: on/off, from and until (whole hours), and the screen right now
+        lay.addWidget(label("DOORBELL SCREEN OFF AT NIGHT (a touch lights it for 30 s; rings always light it)", "section"))
+        grid = QGridLayout(); grid.setSpacing(10); group = QButtonGroup(self); self.night_btns = []
+        for i, (text, v) in enumerate((("On", True), ("Off: always lit", False))):
+            b = button(text, "choice", True, 56); group.addButton(b); grid.addWidget(b, 0, i); self.night_btns.append(b)
+            b.clicked.connect(lambda _=False, v=v: self.set("screen_off", {"enabled": v}))
+        lay.addLayout(grid)
+        row = QHBoxLayout(); self.night_hours = {}
+        for key, title in (("from", "From"), ("to", "Until")):
+            row.addWidget(label(title, "secondary"))
+            minus = button("−", h=56); minus.setFixedWidth(64); row.addWidget(minus)
+            v = label("", "camValue"); v.setAlignment(Qt.AlignCenter); v.setMinimumWidth(130); row.addWidget(v); self.night_hours[key] = v
+            plus = button("+", h=56); plus.setFixedWidth(64); row.addWidget(plus); row.addSpacing(24)
+            minus.clicked.connect(lambda _=False, k=key: self.step_hour(k, -1)); plus.clicked.connect(lambda _=False, k=key: self.step_hour(k, 1))
+        row.addStretch(); lay.addLayout(row)
+        row = QHBoxLayout(); self.screen_now = label("", "secondary"); row.addWidget(self.screen_now, 1)
+        for text, cmd in (("Turn screen on now", "screen_on"), ("Turn screen off now", "screen_off")):
+            b = button(text, h=56); b.setMinimumWidth(240); b.clicked.connect(lambda _=False, c=cmd: self.screen_command(c)); row.addWidget(b)
+        lay.addLayout(row)
+        lay.addWidget(label("Turned on, it stays lit until you turn it off or the night ends; turned off, it stays dark "
+                            "until a touch, a ring, you turn it on, or the schedule changes (at the From/Until hour).",
+                            "secondary", True))
+
         lay.addWidget(label("NETWORK (Wi-Fi and indoor unit address, changed together)", "section"))
         self.wifi_now = label("", "secondary"); lay.addWidget(self.wifi_now)
         self.broker = label("", "secondary"); lay.addWidget(self.broker)
@@ -445,6 +468,13 @@ class OutdoorPanel(QWidget):
     def set(self, key, value):
         if self.send({key: value}): self.msg.setText("Sent · waiting for the outdoor unit to confirm")
         else: self.msg.setText("Not sent: MQTT is not connected"); self.refresh()
+    def night(self):
+        return {"enabled": True, "from": 23, "to": 6, **(self.state.get("screen_off") or {})}
+    def step_hour(self, key, delta):
+        self.set("screen_off", {key: (self.night()[key] + delta) % 24})
+    def screen_command(self, cmd):
+        if self.send({"command": cmd}): self.msg.setText("Sent · the doorbell confirms below")
+        else: self.msg.setText("Not sent: MQTT is not connected")
     def scan(self):
         if self.send({"command": "wifi_scan"}): self.wifi_list.clear(); QListWidgetItem("Scanning…", self.wifi_list)
     def change_network(self):
@@ -499,6 +529,12 @@ class OutdoorPanel(QWidget):
                                   (self.volume_btns, "volume", [v for _, v in OUTDOOR_VOLUMES]),
                                   (self.ring_btns, "ring_seconds", OUTDOOR_DURATIONS)]:
             for b, v in zip(btns, values): b.setChecked(s.get(key) == v)
+        n = self.night(); reported = "screen_off" in s
+        for b, v in zip(self.night_btns, (True, False)): b.setChecked(reported and n["enabled"] == v)
+        hour = lambda h: f"{h % 12 or 12} {'AM' if h < 12 else 'PM'}"
+        for key, v in self.night_hours.items(): v.setText(hour(n[key]) if reported else "—")
+        self.screen_now.setText("Doorbell screen now: " + ("lit" if s.get("screen_lit") else "off") if "screen_lit" in s
+                                else "Doorbell screen: needs the doorbell firmware with this setting")
         self.wifi_now.setText(f"Wi-Fi: {s['wifi_ssid']} (doorbell IP {s.get('ip') or 'none'})" if s.get("wifi_ssid") else "Wi-Fi: not reported yet")
         self.broker.setText(f"Indoor unit address: {s['broker']}" if s.get("broker") else "Indoor unit address: not reported yet")
 

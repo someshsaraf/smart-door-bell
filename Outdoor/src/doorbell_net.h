@@ -64,6 +64,9 @@ typedef struct {
     uint32_t remote_seq;
     int32_t remote_theme, remote_bell, remote_ring, remote_style, remote_glow;
     int32_t remote_chime, remote_repeat, remote_volume;
+    int32_t remote_night_on, remote_night_from, remote_night_to; /* screen off at night: on/off, hours 0-23 */
+    uint32_t screen_cmd_seq; /* bumps on "screen_on" / "screen_off" from the indoor unit */
+    bool screen_cmd_on;
     /* Festival theme chosen by the indoor unit's calendar: bumps festival_seq.
      * festival is "" outside festivals; it ends at festival_until (UTC seconds). */
     uint32_t festival_seq;
@@ -102,6 +105,9 @@ void net_publish_stop(void);
 typedef struct {
     uint32_t theme, bell_color, ring_seconds, bell_style, chime, volume;
     bool glow, chime_repeat;
+    bool night_on;                  /* screen off at night */
+    uint32_t night_from, night_to;  /* local hours, 0-23 */
+    bool screen_lit;                /* the screen is on right now */
 } net_settings_t;
 
 /* Publishes them (retained). Call at start-up and after every change. */

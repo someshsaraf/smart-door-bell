@@ -82,6 +82,8 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - ✋ **Hold 5 s for settings** — a ring traces the screen edge while you hold
 - 📶 **Wi-Fi setup on the screen** — scan, pick a network, type the password on a keyboard sized for the round display; saved and reconnected after every reboot; a wrong password never loses the network that worked
 - 🕒 **Network clock** — time and date from NTP (IST), never a made-up time
+- 🌙 **Screen off at night** — dark from 11 pm to 6 am by default; hours, on/off, and *turn the screen on / off now*
+  under **Settings → Outdoor unit** on the dashboard. A touch lights it for 30 s (that touch never rings); rings always light it
 - 🎨 **Themes** — *Clean & Light* or *Midnight & Gold* (true black, AMOLED-friendly), four bell colours
 - 🌌 **Aurora glow** — soft magenta, cyan and violet light drifting behind the bell; it speeds up and brightens while ringing (on/off under Appearance)
 - ⏱️ **Ring duration** — 10 / 15 / 30 / 45 / 60 s
@@ -182,45 +184,43 @@ and lets you try each look for a minute. The doorbell has the same switches on i
 
 ## 🚀 Getting started
 
-### 1 · Indoor unit (Raspberry Pi)
+Everything comes from this repository: the TuyaOpen SDK is pinned as a submodule (`sdk/TuyaOpen`, the version the
+firmware is tested with), and scripts set up both machines.
+
+### 1 · Outdoor unit (Tuya T5) — on a Windows PC
+
+Needs [Git](https://git-scm.com/download/win). Board: Tuya T5-E1 1.75″ AMOLED (`WAVESHARE_T5AI_TOUCH_AMOLED_1_75`);
+all board, LVGL 9, touch and font settings are already in `Outdoor/app_default.config`.
+
+```powershell
+git clone https://github.com/someshsaraf/smart-door-bell.git
+cd smart-door-bell
+.\setup.ps1                        # once: SDK, its build tools, the doorbell's encryption key
+.\build.ps1 -Flash COM6            # build and flash (port: Device Manager › Ports); -Monitor shows its log
+```
+
+The first build also downloads the T5 compiler and platform (a few GB, once). `setup.ps1` creates the encryption key
+in `Outdoor\src\doorbell_secret.h` and `Indoor\mqtt_psk.txt` (both git-ignored); the Pi needs the second file.
+Configuration explained, logs and troubleshooting: **[Outdoor/README.md](Outdoor/README.md)**.
+
+### 2 · Indoor unit (Raspberry Pi 5)
 
 ```bash
-sudo apt install -y python3-pyside6.qtwidgets python3-pyside6.qtgui python3-pyside6.qtcore \
-                    python3-pygame python3-opencv python3-paho-mqtt mosquitto mosquitto-clients
-# let the doorbell reach the broker from your LAN
-printf 'listener 1883\nallow_anonymous true\n' | sudo tee /etc/mosquitto/conf.d/doorbell.conf
-sudo systemctl restart mosquitto
-sudo ufw allow from 192.168.1.0/24 to any port 1883 proto tcp   # only if ufw is active; use your subnet
-
-cp -r Indoor ~/Indoor && cd ~/Indoor
-python3 app.py                      # try it
-sh autostart/install.sh             # start it at every boot
+git clone https://github.com/someshsaraf/smart-door-bell.git
+scp <pc>:smart-door-bell/Indoor/mqtt_psk.txt smart-door-bell/Indoor/   # the key from the PC (or copy it any way)
+bash smart-door-bell/Indoor/setup_pi.sh
 ```
+
+`setup_pi.sh` installs the packages, puts the dashboard in `~/Indoor` (keeping your settings, camera login and
+recordings), adds the voice packages, sets up the encrypted MQTT broker and starts the dashboard at every boot.
+To update later: `git pull` and run it again. Once the doorbell shows *Connected*:
+`sudo bash ~/Indoor/tools/setup_mqtt_tls.sh --lock` (plain MQTT then only works on the Pi itself).
 
 Set up the camera on the dashboard: **Settings → Camera → Find** discovers it on the network (ONVIF names it,
 e.g. *VIGI C330I*), then enter its password, **Test connection** (shows a snapshot) and **Save**. The login is kept
 only in `~/Indoor/secrets.json` on the Pi (readable by nobody else, git-ignored).
 Pair the speaker, pick a tone and choose your news under **⚙ Settings**.
 Full details: **[Indoor/README.md](Indoor/README.md)**.
-
-### 2 · Outdoor unit (Tuya T5)
-
-The firmware is a [TuyaOpen](https://github.com/tuya/TuyaOpen) application and builds inside the SDK.
-Board: Tuya T5-E1 1.75″ AMOLED, using the SDK's `WAVESHARE_T5AI_TOUCH_AMOLED_1_75` definition — all board,
-LVGL 9, touch and font settings are already in `Outdoor/app_default.config`.
-
-```powershell
-git clone https://github.com/tuya/TuyaOpen.git; cd TuyaOpen
-. .\export.ps1                                   # every new terminal (export.sh on Linux/macOS)
-cd examples\graphics
-git clone https://github.com/someshsaraf/smart-door-bell.git doorbell
-cd doorbell\Outdoor
-tos.py build                                     # → dist\Outdoor_1.0.1\Outdoor_QIO_1.0.1.bin
-tos.py flash -p COM6                             # your serial port
-```
-
-Configuration explained, how to check and change it, logs and troubleshooting:
-**[Outdoor/README.md](Outdoor/README.md)**.
 
 ### 3 · Connect them
 
