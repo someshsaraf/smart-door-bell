@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070b14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Doorbell">
+<title>Doorbell</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="login" class="hidden">
+  <div class="login-card">
+    <img class="logo" src="icon.svg" alt="">
+    <h1>Doorbell</h1>
+    <p id="login-hint" class="muted">Enter the password set on the dashboard (Settings › Web access).</p>
+    <form id="login-form">
+      <input id="password" type="password" autocomplete="current-password" placeholder="Password" required>
+      <button type="submit" class="primary">Open</button>
+    </form>
+    <p id="login-error" class="error"></p>
+  </div>
+</main>
+
+<div id="app" class="hidden">
+  <nav id="nav">
+    <a href="#home" data-page="home"><span class="ico">⌂</span><span>Home</span></a>
+    <a href="#door" data-page="door"><span class="ico">◉</span><span>Front door</span></a>
+    <a href="#events" data-page="events"><span class="ico">▶</span><span>Events</span></a>
+    <a href="#settings" data-page="settings"><span class="ico">⚙</span><span>Settings</span></a>
+  </nav>
+
+  <div id="content">
+    <header id="topbar">
+      <div class="clock-wrap">
+        <div id="clock" class="clock"></div>
+        <div id="date" class="date"></div>
+      </div>
+      <div class="pills">
+        <span id="pill-mute" class="pill warn hidden"></span>
+        <span id="pill-door" class="pill"></span>
+      </div>
+    </header>
+    <div id="festival" class="festival hidden"></div>
+
+    <!-- HOME: news like a TV channel, or photos -->
+    <section id="page-home" class="page">
+      <div class="seg" id="home-view">
+        <button data-view="news">News</button><button data-view="photos">Photos</button>
+      </div>
+      <div id="news-view">
+        <article id="story" class="story"></article>
+        <div id="market" class="market"></div>
+        <div id="ticker" class="ticker"><div class="ticker-label"></div><div class="ticker-track"><div class="ticker-run"></div></div></div>
+      </div>
+      <div id="photos-view" class="hidden">
+        <div class="photo-frame"><img id="photo-a" alt=""><img id="photo-b" alt=""><div id="photo-credit" class="photo-credit"></div>
+          <button class="nav-arrow left" data-photo="-1">‹</button><button class="nav-arrow right" data-photo="1">›</button></div>
+      </div>
+      <h3 class="section">RECENT EVENTS</h3>
+      <div id="log" class="card log"></div>
+      <div id="more-stories">
+        <h3 class="section">MORE STORIES</h3>
+        <div id="story-list" class="story-list"></div>
+      </div>
+    </section>
+
+    <!-- FRONT DOOR -->
+    <section id="page-door" class="page">
+      <div class="card live">
+        <div class="live-frame">
+          <img id="live" alt="">
+          <div id="live-placeholder" class="live-placeholder"><span>◉</span><p id="live-note">Live camera</p>
+            <button id="watch" class="primary">▶ Watch live</button></div>
+          <button id="live-close" class="live-close hidden" title="Stop watching">×</button>
+        </div>
+      </div>
+      <div class="card row-between">
+        <div><h3>Bell sound inside</h3><p id="mute-status" class="muted">On</p></div>
+        <div class="row">
+          <button data-mute="60">Mute 1 h</button><button data-mute="480">Mute 8 h</button>
+          <button id="unmute" class="hidden">Turn on</button>
+        </div>
+      </div>
+      <div class="card row-between">
+        <div><h3>Ring alerts on this device</h3><p id="alert-status" class="muted"></p></div>
+        <a class="button" href="#settings/web">Set up</a>
+      </div>
+    </section>
+
+    <!-- EVENTS -->
+    <section id="page-events" class="page">
+      <div class="row-between wrap">
+        <div class="seg" id="ev-filter">
+          <button data-f="all">All</button><button data-f="today">Today</button><button data-f="yesterday">Yesterday</button><button data-f="week">7 days</button>
+        </div>
+        <div class="row">
+          <button id="ev-select">Select</button>
+          <button id="ev-delete" class="danger-outline hidden">Delete</button>
+        </div>
+      </div>
+      <div id="events" class="events"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="page-settings" class="page">
+      <div class="settings">
+        <div id="set-nav" class="set-nav"></div>
+        <div id="set-body" class="set-body card"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- someone rang: over everything -->
+<div id="ring" class="ring hidden">
+  <img id="ring-live" alt="">
+  <div class="ring-shade"></div>
+  <div class="ring-top">
+    <div><div class="ring-kicker"><span class="dot"></span> VISITOR AT THE DOOR</div><div id="ring-sub" class="ring-sub"></div></div>
+    <svg class="countdown" viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" class="track"/><circle cx="50" cy="50" r="44" id="cd-arc" class="arc"/>
+      <text x="50" y="50" id="cd-text" dominant-baseline="central" text-anchor="middle"></text></svg>
+  </div>
+  <div class="ring-bottom">
+    <button id="ring-mute" class="glass">Mute 1 h</button>
+    <button id="ring-stop" class="stop">■ STOP</button>
+  </div>
+</div>
+
+<dialog id="player">
+  <div class="player-head">
+    <div><h3 id="player-title"></h3><p id="player-sub" class="muted"></p></div>
+    <button id="player-close" class="ghost">×</button>
+  </div>
+  <video id="video" controls playsinline autoplay></video>
+  <div class="player-foot"><span id="player-note" class="muted"></span><button id="player-delete" class="danger-outline">Delete recording</button></div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

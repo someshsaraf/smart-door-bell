@@ -4,7 +4,7 @@ import json, time
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize
 from festivals import FESTIVALS, upcoming
-from news import GENRES, REGIONS
+from news import CHANNELS, DEFAULT_CHANNELS, GENRES, REGIONS
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QPushButton, QScrollArea, QScroller, QSizePolicy, QSlider,
@@ -114,13 +114,16 @@ class SpeakerPanel(QWidget):
         lay.addWidget(self.msg)
         # Two-way talk is still being tried out: off unless chosen here. While a call
         # lasts, the speaker runs in its hands-free mode, so the bell tone stops.
-        lay.addWidget(label("TWO-WAY TALK WITH THE DOOR (TRIAL)", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        lay.addWidget(label("TWO-WAY TALK WITH THE DOOR (TRIAL)", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.talk_btns = {}
         for value, text in ((False, "Off"), (True, "On: Talk button on the door screens")):
             b = button(text, "choice", True, 56); b.setChecked(settings.get("intercom", False) == value); group.addButton(b); row.addWidget(b)
+            self.talk_btns[value] = b
             b.clicked.connect(lambda _=False, value=value: (self.settings.__setitem__("intercom", value), self.save()))
         lay.addLayout(row)
         bt.devices.connect(self.show_devices); bt.status.connect(self.msg.setText); bt.output.connect(self.show_output)
         self.test_cb = None
+    def sync(self):
+        self.talk_btns[bool(self.settings.get("intercom", False))].setChecked(True)
     def show_devices(self, devs):
         self.items = devs; self.list.clear()
         for d in devs:
@@ -168,20 +171,23 @@ class TonePanel(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget(); lay = QVBoxLayout(body); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
         scroll.setWidget(body); outer.addWidget(scroll, 1)
-        group = QButtonGroup(self); group.setExclusive(True)
+        group = QButtonGroup(self); group.setExclusive(True); self.tone_btns = {}
         current = settings.get("tone", "ding_dong.wav"); grid = None; category = None; n = 0
         for cat, name, rel in list_tones(folder):
             if cat != category:  # new section: heading and a fresh two-column grid
                 category = cat; lay.addWidget(label(cat.upper(), "section"))
                 grid = QGridLayout(); grid.setSpacing(10); lay.addLayout(grid); n = 0
             cell = QHBoxLayout(); cell.setSpacing(6)
-            pick = button(name, "choice", True, 60); pick.setChecked(rel == current); group.addButton(pick)
+            pick = button(name, "choice", True, 60); pick.setChecked(rel == current); group.addButton(pick); self.tone_btns[rel] = pick
             pick.clicked.connect(lambda _=False, r=rel: self.choose(r))
             play = button("▶", h=60); play.setFixedWidth(64); play.clicked.connect(lambda _=False, p=folder / rel: preview(p))
             cell.addWidget(pick, 1); cell.addWidget(play); grid.addLayout(cell, n // 2, n % 2); n += 1
         lay.addStretch()
     def choose(self, name):
         self.settings["tone"] = name; self.save()
+    def sync(self):
+        b = self.tone_btns.get(self.settings.get("tone", "ding_dong.wav"))
+        if b: b.setChecked(True)
 
 class NewsPanel(QWidget):
     """Region (one) and genres (any number) of the headlines on the main page."""
@@ -189,21 +195,39 @@ class NewsPanel(QWidget):
         super().__init__(); self.settings = settings; self.save = save; self.changed = changed
         lay = QVBoxLayout(self); lay.setSpacing(12)
         lay.addWidget(label("News", "sectionTitle"))
-        lay.addWidget(label("Headlines on the main page (the Photos / News tile there switches between them). "
-                            "From Google News, refreshed every 15 minutes.", "secondary", True))
-        lay.addWidget(label("REGIONS (choose any; their news is mixed)", "section")); row = QHBoxLayout()
+        lay.addWidget(label("The main page's news (the Photos / News tile there switches to it): the channels' top "
+                            "stories with photos, and their newest headlines in the ticker below, marked BREAKING "
+                            "when under 90 minutes old. From the channels' public feeds, every 10 minutes.", "secondary", True))
+        lay.addWidget(label("CHANNELS (choose any; their stories are mixed)", "section")); grid = QGridLayout(); grid.setSpacing(10)
+        on = set(settings.get("news_channels", DEFAULT_CHANNELS)); self.channel_btns = {}
+        for i, (key, (name, _, _, _)) in enumerate(CHANNELS.items()):
+            b = button(name, "choice", True, 64); b.setChecked(key in on); grid.addWidget(b, i // 3, i % 3)
+            b.toggled.connect(lambda _=False: self.set_channels()); self.channel_btns[key] = b
+        lay.addLayout(grid)
+        lay.addWidget(label("GOOGLE NEWS: REGIONS (when Google News is chosen above)", "section")); row = QHBoxLayout()
         current = set(settings.get("news_regions") or [settings.get("news_region", "india")]); self.region_btns = {}
         for key, (text, _, _) in REGIONS.items():
             b = button(text, "choice", True, 64); b.setChecked(key in current); row.addWidget(b)
             b.toggled.connect(lambda _=False: self.set_regions()); self.region_btns[key] = b
         lay.addLayout(row)
-        lay.addWidget(label("GENRES (choose any)", "section")); grid = QGridLayout(); grid.setSpacing(10)
+        lay.addWidget(label("GOOGLE NEWS: TOPICS", "section")); grid = QGridLayout(); grid.setSpacing(10)
         chosen = set(settings.get("news_genres", ["top"])); self.genre_btns = {}
         for i, (key, (text, _)) in enumerate(GENRES.items()):
             b = button(text, "choice", True, 64); b.setChecked(key in chosen); grid.addWidget(b, i // 3, i % 3)
             b.toggled.connect(lambda _=False: self.set_genres()); self.genre_btns[key] = b
         lay.addLayout(grid)
         self.msg = label("", "secondary", True); lay.addWidget(self.msg); lay.addStretch()
+    def sync(self):
+        """Shows the settings as they are now (changed from a browser), without saving again."""
+        for btns, chosen in ((self.channel_btns, self.settings.get("news_channels", DEFAULT_CHANNELS)),
+                             (self.region_btns, self.settings.get("news_regions") or ["india"]),
+                             (self.genre_btns, self.settings.get("news_genres", ["top"]))):
+            for key, b in btns.items():
+                b.blockSignals(True); b.setChecked(key in chosen); b.blockSignals(False)
+    def set_channels(self):
+        keys = [k for k, b in self.channel_btns.items() if b.isChecked()]
+        self.settings["news_channels"] = keys or DEFAULT_CHANNELS; self.save(); self.changed()
+        self.msg.setText("Updating the news…" if keys else "No channel chosen: showing NDTV, Times of India and BBC")
     def set_regions(self):
         keys = [k for k, b in self.region_btns.items() if b.isChecked()]
         self.settings["news_regions"] = keys or ["india"]; self.settings.pop("news_region", None); self.save(); self.changed()
@@ -239,9 +263,9 @@ class CameraPanel(QWidget):
                 f = button("Find", h=56); f.setFixedWidth(110); f.clicked.connect(self.find); row.addWidget(f)
             left.addLayout(row)
         self.found_row = QHBoxLayout(); left.addLayout(self.found_row)
-        left.addWidget(label("RECORDING WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        left.addWidget(label("RECORDING WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.len_btns = {}
         for secs in CLIP_CHOICES:
-            b = button(f"{secs} s", "choice", True, 52); b.setChecked(settings.get("record_seconds", CLIP_S) == secs)
+            b = button(f"{secs} s", "choice", True, 52); b.setChecked(settings.get("record_seconds", CLIP_S) == secs); self.len_btns[secs] = b
             group.addButton(b); row.addWidget(b); b.clicked.connect(lambda _=False, s=secs: self.set_length(s))
         left.addLayout(row)
         row = QHBoxLayout()
@@ -314,9 +338,104 @@ class CameraPanel(QWidget):
         self.cfg.save(self.cam); self.msg.setText("✓ Saved. The ring screen uses it from the next ring.")
         if self.on_saved: self.on_saved()
 
+    def sync(self):
+        b = self.len_btns.get(self.settings.get("record_seconds"))
+        if b: b.setChecked(True)
     def set_length(self, secs):
         self.settings["record_seconds"] = secs; self.save_settings()
         self.msg.setText(f"✓ Each ring is recorded for {secs} seconds")
+
+def web_addresses():
+    """http addresses of this Pi's web page: home network first, then Tailscale (if any)."""
+    import subprocess
+    out = []
+    ip = this_ip()
+    if ip:
+        # name the network: a phone on another Wi-Fi of the same router (other subnet) cannot reach this address
+        try:
+            ssid = next((l.split(":", 1)[1] for l in subprocess.run(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"],
+                         capture_output=True, text=True, timeout=3).stdout.splitlines() if l.startswith("yes:")), "")
+        except (OSError, subprocess.TimeoutExpired): ssid = ""
+        out.append((f"On the Wi-Fi “{ssid}” only" if ssid else "Home network", f"http://{ip}:8080"))
+    try:
+        ts = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3).stdout.split()
+        if ts: out.append(("Anywhere, with Tailscale", f"http://{ts[0]}:8080"))
+    except (OSError, subprocess.TimeoutExpired): pass
+    return out
+
+
+def qr_pixmap(text, size=220):
+    """A QR code of `text` (needs the qrcode package), or None."""
+    try: import qrcode
+    except ImportError: return None
+    qr = qrcode.QRCode(border=2); qr.add_data(text); qr.make(fit=True); m = qr.get_matrix(); n = len(m)
+    pm = QPixmap(size, size); pm.fill(QColor("#ffffff")); p = QPainter(pm); cell = size / n
+    p.setPen(Qt.NoPen); p.setBrush(QColor("#000000"))
+    for y, row in enumerate(m):
+        for x, on in enumerate(row):
+            if on: p.drawRect(int(x * cell), int(y * cell), int(cell + 1), int(cell + 1))
+    p.end(); return pm
+
+
+class WebAccessPanel(QWidget):
+    """The dashboard in a browser on phones and laptops: on/off, password, addresses, QR code."""
+    changed = Signal()
+
+    def __init__(self, settings, save):
+        super().__init__(); self.settings = settings; self.save = save
+        import web
+        self.web = web
+        lay = QVBoxLayout(self); lay.setSpacing(10)
+        lay.addWidget(label("Web access", "sectionTitle"))
+        lay.addWidget(label("Open the doorbell on a phone, tablet or laptop: its status, a live camera view, an alert "
+                            "with STOP when someone rings, mute, and the recordings. At home over Wi-Fi, from anywhere "
+                            "with Tailscale (nothing is opened to the internet). A password protects it.", "secondary", True))
+        lay.addWidget(label("WEB ACCESS", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.onoff = []
+        for value, text in ((True, "On"), (False, "Off")):
+            b = button(text, "choice", True, 60); b.setChecked(settings.get("web_access", False) == value); group.addButton(b)
+            b.clicked.connect(lambda _=False, v=value: self.set_on(v)); row.addWidget(b); self.onoff.append(b)
+        lay.addLayout(row)
+        lay.addWidget(label("PASSWORD (also logs out every phone when changed)", "section")); row = QHBoxLayout()
+        self.pw = label("", "camValue"); row.addWidget(self.pw, 1)
+        b = button("Set password", h=56); b.setFixedWidth(220); b.clicked.connect(self.set_password); row.addWidget(b)
+        lay.addLayout(row)
+        body = QHBoxLayout(); left = QVBoxLayout(); left.addWidget(label("OPEN IN A BROWSER", "section"))
+        self.urls = QVBoxLayout(); left.addLayout(self.urls); left.addStretch(); body.addLayout(left, 1)
+        self.qr = QLabel(); self.qr.setFixedSize(230, 230); self.qr.setAlignment(Qt.AlignCenter); body.addWidget(self.qr, 0, Qt.AlignTop)
+        lay.addLayout(body)
+        self.msg = label("", "secondary", True); lay.addWidget(self.msg); lay.addStretch()
+        self.refresh()
+
+    def refresh(self):
+        self.pw.setText("set" if self.web.has_password() else "not set yet")
+        while self.urls.count():
+            w = self.urls.takeAt(0).widget()
+            if w: w.deleteLater()
+        addrs = web_addresses()
+        for name, url in addrs:
+            self.urls.addWidget(label(name, "secondary")); self.urls.addWidget(label(url, "webUrl"))
+        pm = qr_pixmap(addrs[0][1]) if addrs else None
+        if pm: self.qr.setPixmap(pm)
+        else: self.qr.setText("")
+        on = self.settings.get("web_access", False)
+        self.msg.setText("" if on and self.web.has_password() else
+                         "Set a password, then switch it on." if not self.web.has_password() else "Switched off: the page does not open.")
+
+    def set_on(self, value):
+        if value and not self.web.has_password():
+            self.msg.setText("Set a password first."); self.onoff[1].setChecked(True); return
+        self.settings["web_access"] = value; self.save(); self.changed.emit(); self.refresh()
+
+    def set_password(self):
+        pw = Keyboard.ask(self, "New password (at least 6 characters)", password=True)
+        if pw is None: return
+        if len(pw) < 6: self.msg.setText("At least 6 characters, please"); return
+        again = Keyboard.ask(self, "The same password again", password=True)
+        if again != pw: self.msg.setText("The two did not match; nothing changed"); return
+        self.web.set_password(pw); self.msg.setText("✓ Password set. Phones need to log in again."); self.changed.emit(); self.refresh()
+
+    def showEvent(self, e):
+        super().showEvent(e); self.refresh()
 
 class PhonePanel(QWidget):
     """Push notifications to phones (ntfy app): on/off, the topic to subscribe to, a test."""
@@ -333,9 +452,10 @@ class PhonePanel(QWidget):
         lay.addWidget(label("TOPIC TO SUBSCRIBE TO", "section"))
         self.topic = label("", "topicName"); self.topic.setTextInteractionFlags(Qt.TextSelectableByMouse); lay.addWidget(self.topic)
         self.server = label("", "secondary"); lay.addWidget(self.server)
-        lay.addWidget(label("NOTIFY WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self)
+        lay.addWidget(label("NOTIFY WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.onoff = {}
         for value, text in ((True, "On"), (False, "Off")):
             b = button(text, "choice", True, 64); b.setChecked(settings.get("notify", False) == value); group.addButton(b); row.addWidget(b)
+            self.onoff[value] = b
             b.clicked.connect(lambda _=False, value=value: self.set_on(value))
         lay.addLayout(row)
         row = QHBoxLayout()
@@ -345,6 +465,8 @@ class PhonePanel(QWidget):
         self.msg = label("", "secondary", True); lay.addWidget(self.msg); lay.addStretch()
         notifier.result.connect(lambda ok, text: self.msg.setText(("✓ " if ok else "✗ ") + text))
         self.show_topic()
+    def sync(self):
+        self.onoff[bool(self.settings.get("notify", False))].setChecked(True); self.show_topic()
     def show_topic(self):
         self.topic.setText(self.settings["notify_topic"])
         self.server.setText(f"Server: {self.notifier.server}   ·   {self.notifier.encryption()}")
@@ -371,12 +493,13 @@ class FestivalPanel(QWidget):
         lay.addWidget(label("Festivals", "sectionTitle"))
         lay.addWidget(label("Around festivals the dashboard and the doorbell switch to a festive theme by themselves "
                             "and return to your own settings afterwards.", "secondary", True))
+        self.flag_btns = {}
         for title, key, texts in (("FESTIVE THEMES", "festival_themes", ("Automatic", "Off")),
                                   ("FESTIVE BELL TONES", "festival_tones", ("On", "Off"))):
             lay.addWidget(label(title, "section")); row = QHBoxLayout(); group = QButtonGroup(self)
             for value, text in zip((True, False), texts):
                 b = button(text, "choice", True, 64); b.setChecked(settings.get(key, True) == value); group.addButton(b); row.addWidget(b)
-                b.clicked.connect(lambda _=False, key=key, value=value: self.set(key, value))
+                b.clicked.connect(lambda _=False, key=key, value=value: self.set(key, value)); self.flag_btns[(key, value)] = b
             lay.addLayout(row)
         lay.addWidget(label("COMING UP", "section")); self.dates = label("", "secondary", True); lay.addWidget(self.dates)
         lay.addWidget(label("TRY ONE FOR A MINUTE", "section")); row = QHBoxLayout()
@@ -386,6 +509,8 @@ class FestivalPanel(QWidget):
         lay.addLayout(row); lay.addStretch(); self.refresh()
     def set(self, key, value):
         self.settings[key] = value; self.save(); self.changed()
+    def sync(self):
+        for key in ("festival_themes", "festival_tones"): self.flag_btns[(key, bool(self.settings.get(key, True)))].setChecked(True)
     def refresh(self):
         import datetime as dt
         lines = []
@@ -400,40 +525,51 @@ class OutdoorPanel(QWidget):
     buttons show what the outdoor unit reports back, so they are always true."""
     def __init__(self, send):
         super().__init__(); self.send = send; self.state = {}; self.online = None; self.networks = []
-        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); touch_scroll(scroll)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # dragged with a finger
-        body = QWidget(); lay = QVBoxLayout(body); lay.setSpacing(12); scroll.setWidget(body); outer.addWidget(scroll)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(10)
+        # always visible: title, the doorbell's status, the last confirmation; then the sub-tabs
+        head = QHBoxLayout(); head.addWidget(label("Outdoor unit", "sectionTitle")); head.addStretch()
+        self.status = label("Waiting for the outdoor unit…", "secondary"); head.addWidget(self.status); lay.addLayout(head)
+        tabs = QHBoxLayout(); tabs.setSpacing(10); group = QButtonGroup(self); self.pages = QStackedWidget()
+        for i, name in enumerate(("Look", "Sound", "Screen", "Network")):
+            b = button(name, "subtab", True, 56); b.setChecked(i == 0); group.addButton(b); tabs.addWidget(b)
+            b.clicked.connect(lambda _=False, i=i: self.pages.setCurrentIndex(i))
+            page = QWidget(); QVBoxLayout(page).setSpacing(10); self.pages.addWidget(page)
+        lay.addLayout(tabs); lay.addWidget(self.pages, 1)
+        self.msg = label("", "status"); lay.addWidget(self.msg)
+        look, sound, screen, net = (self.pages.widget(i).layout() for i in range(4))
 
-        lay.addWidget(label("Outdoor unit", "sectionTitle"))
-        self.status = label("Waiting for the outdoor unit…", "secondary", True); lay.addWidget(self.status)
-
-        def choice_row(title, options, key, values, cols=0, icons=None, h=56):
-            lay.addWidget(label(title, "section")); grid = QGridLayout(); grid.setSpacing(10); group = QButtonGroup(self); btns = []
+        def choice_row(into, title, options, key, values, cols=0, icons=None, h=56):
+            into.addWidget(label(title, "section")); grid = QGridLayout(); grid.setSpacing(10); group = QButtonGroup(self); btns = []
             for i, text in enumerate(options):
                 b = button(text, "choice", True, h); group.addButton(b); btns.append(b)
                 if icons and icons[i]: b.setIcon(QIcon(str(icons[i]))); b.setIconSize(QSize(h - 16, h - 16))
                 grid.addWidget(b, i // cols if cols else 0, i % cols if cols else i)
                 b.clicked.connect(lambda _=False, v=values[i]: self.set(key, v))
-            lay.addLayout(grid); return btns
-        self.theme_btns = choice_row("THEME", OUTDOOR_THEMES, "theme", range(len(OUTDOOR_THEMES)))
-        self.bell_btns = choice_row("BELL COLOUR", [n for n, _ in OUTDOOR_BELLS], "bell_color", range(len(OUTDOOR_BELLS)))
+            into.addLayout(grid); return btns
+
+        # Look: theme, bell colour and style, glow
+        self.theme_btns = choice_row(look, "THEME", OUTDOOR_THEMES, "theme", range(len(OUTDOOR_THEMES)))
+        self.bell_btns = choice_row(look, "BELL COLOUR", [n for n, _ in OUTDOOR_BELLS], "bell_color", range(len(OUTDOOR_BELLS)))
         for b, (_, color) in zip(self.bell_btns, OUTDOOR_BELLS): b.setIcon(dot_icon(color)); b.setIconSize(QSize(22, 22))
         icons = [next(BELL_ICONS.glob(f"{i}_*.png"), None) for i in range(len(OUTDOOR_STYLES))]
-        self.style_btns = choice_row("BELL STYLE", OUTDOOR_STYLES, "bell_style", range(len(OUTDOOR_STYLES)), cols=3, icons=icons, h=84)
-        self.glow_btns = choice_row("BACKGROUND GLOW", ["Off", "Aurora (magenta · cyan)"], "glow", [False, True])
-        self.chime_btns = choice_row("DOORBELL CHIME (its own speaker)", OUTDOOR_CHIMES, "chime", range(len(OUTDOOR_CHIMES)), cols=3)
-        self.repeat_btns = choice_row("CHIME PLAYS", ["Once per press", "For the whole ring"], "chime_repeat", [False, True])
-        self.volume_btns = choice_row("CHIME VOLUME", [n for n, _ in OUTDOOR_VOLUMES], "volume", [v for _, v in OUTDOOR_VOLUMES])
-        self.ring_btns = choice_row("RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
+        self.style_btns = choice_row(look, "BELL STYLE", OUTDOOR_STYLES, "bell_style", range(len(OUTDOOR_STYLES)), cols=3, icons=icons, h=76)
+        self.glow_btns = choice_row(look, "BACKGROUND GLOW", ["Off", "Aurora (magenta · cyan)"], "glow", [False, True])
+        look.addStretch()
 
-        # Screen off at night: on/off, from and until (whole hours), and the screen right now
-        lay.addWidget(label("DOORBELL SCREEN OFF AT NIGHT (a touch lights it for 30 s; rings always light it)", "section"))
+        # Sound: the doorbell's own chime, and how long a ring lasts
+        self.chime_btns = choice_row(sound, "CHIME (the doorbell's own speaker)", OUTDOOR_CHIMES, "chime", range(len(OUTDOOR_CHIMES)), cols=3)
+        self.repeat_btns = choice_row(sound, "CHIME PLAYS", ["Once per press", "For the whole ring"], "chime_repeat", [False, True])
+        self.volume_btns = choice_row(sound, "VOLUME", [n for n, _ in OUTDOOR_VOLUMES], "volume", [v for _, v in OUTDOOR_VOLUMES])
+        self.ring_btns = choice_row(sound, "RING DURATION (seconds)", [str(s) for s in OUTDOOR_DURATIONS], "ring_seconds", OUTDOOR_DURATIONS)
+        sound.addStretch()
+
+        # Screen: off at night (on/off, from, until), and the screen right now
+        screen.addWidget(label("SCREEN OFF AT NIGHT (a touch lights it for 30 s; rings always light it)", "section"))
         grid = QGridLayout(); grid.setSpacing(10); group = QButtonGroup(self); self.night_btns = []
         for i, (text, v) in enumerate((("On", True), ("Off: always lit", False))):
             b = button(text, "choice", True, 56); group.addButton(b); grid.addWidget(b, 0, i); self.night_btns.append(b)
             b.clicked.connect(lambda _=False, v=v: self.set("screen_off", {"enabled": v}))
-        lay.addLayout(grid)
+        screen.addLayout(grid)
         row = QHBoxLayout(); self.night_hours = {}
         for key, title in (("from", "From"), ("to", "Until")):
             row.addWidget(label(title, "secondary"))
@@ -441,28 +577,32 @@ class OutdoorPanel(QWidget):
             v = label("", "camValue"); v.setAlignment(Qt.AlignCenter); v.setMinimumWidth(130); row.addWidget(v); self.night_hours[key] = v
             plus = button("+", h=56); plus.setFixedWidth(64); row.addWidget(plus); row.addSpacing(24)
             minus.clicked.connect(lambda _=False, k=key: self.step_hour(k, -1)); plus.clicked.connect(lambda _=False, k=key: self.step_hour(k, 1))
-        row.addStretch(); lay.addLayout(row)
-        row = QHBoxLayout(); self.screen_now = label("", "secondary"); row.addWidget(self.screen_now, 1)
-        for text, cmd in (("Turn screen on now", "screen_on"), ("Turn screen off now", "screen_off")):
-            b = button(text, h=56); b.setMinimumWidth(240); b.clicked.connect(lambda _=False, c=cmd: self.screen_command(c)); row.addWidget(b)
-        lay.addLayout(row)
-        lay.addWidget(label("Turned on, it stays lit until you turn it off or the night ends; turned off, it stays dark "
-                            "until a touch, a ring, you turn it on, or the schedule changes (at the From/Until hour).",
-                            "secondary", True))
+        row.addStretch(); screen.addLayout(row)
+        screen.addWidget(label("RIGHT NOW", "section"))
+        row = QHBoxLayout(); self.screen_now = label("", "camValue"); row.addWidget(self.screen_now, 1)
+        for text, cmd in (("Turn screen on", "screen_on"), ("Turn screen off", "screen_off")):
+            b = button(text, h=56); b.setMinimumWidth(220); b.clicked.connect(lambda _=False, c=cmd: self.screen_command(c)); row.addWidget(b)
+        screen.addLayout(row)
+        screen.addWidget(label("Turned on, it stays lit until you turn it off or the night ends; turned off, it stays dark "
+                               "until a touch, a ring, you turn it on, or the schedule changes (at the From/Until hour).",
+                               "secondary", True))
+        screen.addStretch()
 
-        lay.addWidget(label("NETWORK (Wi-Fi and indoor unit address, changed together)", "section"))
-        self.wifi_now = label("", "secondary"); lay.addWidget(self.wifi_now)
-        self.broker = label("", "secondary"); lay.addWidget(self.broker)
+        # Network: Wi-Fi and the indoor unit's address, changed together
+        net.addWidget(label("NOW", "section"))
+        self.wifi_now = label("", "secondary"); net.addWidget(self.wifi_now)
+        self.broker = label("", "secondary"); net.addWidget(self.broker)
+        net.addWidget(label("CHANGE (Wi-Fi and indoor unit address, applied together)", "section"))
         row = QHBoxLayout(); scan = button("Scan networks"); scan.clicked.connect(self.scan)
         change = button("Change network…"); change.clicked.connect(self.change_network)
-        row.addWidget(scan); row.addWidget(change); lay.addLayout(row)
-        self.wifi_list = QListWidget(); self.wifi_list.setObjectName("list"); self.wifi_list.setMinimumHeight(220); touch_scroll(self.wifi_list)
-        lay.addWidget(self.wifi_list)
-        lay.addWidget(label("Choose a network in the list to move the doorbell to it, or none to keep its Wi-Fi and only "
-                            "change the indoor unit address. Both are sent in one message: the doorbell keeps the new "
-                            "settings only if it joins the Wi-Fi and reaches the indoor unit within 60 s; otherwise it "
-                            "goes back to the old ones by itself.", "secondary", True))
-        self.msg = label("", "status"); lay.addWidget(self.msg); lay.addStretch()
+        row.addWidget(scan); row.addWidget(change); net.addLayout(row)
+        self.wifi_list = QListWidget(); self.wifi_list.setObjectName("list"); touch_scroll(self.wifi_list)
+        net.addWidget(self.wifi_list, 1)
+        QListWidgetItem("Tap Scan networks to list the Wi-Fi networks the doorbell sees", self.wifi_list)
+        net.addWidget(label("Choose a network in the list to move the doorbell to it, or none to keep its Wi-Fi and only "
+                            "change the indoor unit address. The doorbell keeps the new settings only if it joins the "
+                            "Wi-Fi and reaches the indoor unit within 60 s; otherwise it goes back to the old ones.",
+                            "secondary", True))
         self.refresh()
 
     def set(self, key, value):
@@ -554,11 +694,17 @@ class SettingsPage(QFrame):
         self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
         self.phone = PhonePanel(settings, save, notifier)
         self.camera = CameraPanel(settings, save)
+        self.webaccess = WebAccessPanel(settings, save)
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
-                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Outdoor unit", self.outdoor)]):
+                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Web access", self.webaccess), ("Outdoor unit", self.outdoor)]):
             panel_frame = QFrame(); panel_frame.setObjectName("panel"); QVBoxLayout(panel_frame).addWidget(panel); self.stack.addWidget(panel_frame)
             nb = button(text, "nav", True, 72); group.addButton(nb); nav.addWidget(nb)
             nb.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i)); nb.setChecked(i == 0)
         nav.addStretch(); navw = QWidget(); navw.setLayout(nav); navw.setFixedWidth(240)
         body.addWidget(navw); body.addWidget(self.stack, 1); root.addLayout(body, 1)
+
+    def sync(self):
+        """A setting was changed in a browser: the buttons here show it too."""
+        for panel in (self.speaker, self.tone, self.news, self.camera, self.phone, self.festivals): panel.sync()
+        self.webaccess.refresh()

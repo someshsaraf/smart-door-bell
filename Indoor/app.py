@@ -5,6 +5,10 @@ from pathlib import Path
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|timeout;5000000")
 # SDL (pygame) otherwise swallows SIGTERM, so `kill` / systemd could not stop the app.
 os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
+# Bell audio in ~40 ms chunks: SDL otherwise asks PipeWire for ~3 ms ones, which drives the whole
+# chain (Bluetooth speaker included) at that pace and drops out audibly under any load.
+os.environ.setdefault("PIPEWIRE_LATENCY", "2048/48000")
+os.environ.setdefault("PULSE_LATENCY_MSEC", "60")
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QVariantAnimation, QEasingCurve, QRectF, QPointF
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QLinearGradient, QRadialGradient
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget,
@@ -28,6 +32,12 @@ from string import Template
 from bluetooth import Bluetooth
 from festivals import current as current_festival, greeting as festival_greeting
 from news import News, ago
+from news_ui import NewsPainter, TICKER_H, BOTTOM_H, FLASH_MIN
+from ring_ui import RingPage
+from web import Web
+from webapp import WebApp
+import recorder as recorder_mod
+from markets import Markets
 from settings_ui import SettingsPage, this_ip
 from intercom import Intercom, PORT as TALK_PORT
 from notify import Notifier
@@ -104,11 +114,14 @@ class Audio:
         if pygame is None: print("Audio unavailable: pygame missing", flush=True); return
         try:
             if pygame.mixer.get_init(): pygame.mixer.quit()
-            pygame.mixer.init()
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)  # a large buffer: no dropouts
             pygame.mixer.music.load(str(path or self.tone())); pygame.mixer.music.play(-1 if loop else 0)
         except Exception as e: print("Audio unavailable:", e, flush=True)
     def stop(self):
-        if pygame and pygame.mixer.get_init(): pygame.mixer.music.stop()
+        if pygame and pygame.mixer.get_init(): pygame.mixer.music.stop(); pygame.mixer.quit()
+    def release_if_idle(self):
+        """Closes the audio stream once a sound has finished: an open one keeps the speaker link busy."""
+        if pygame and pygame.mixer.get_init() and not pygame.mixer.music.get_busy(): pygame.mixer.quit()
 
 class Camera(QThread):
     """Reads the VIGI RTSP stream while a ring is active and hands frames to the UI.
@@ -148,8 +161,11 @@ def label(text, obj=None):
 class Scenic(QWidget):
     """Full-screen backdrop of the dashboard, in one of two modes:
     photos: every interval the next picture slides in from the right;
-    news:   the wallpaper stays, darkened, and the next headline slides in.
+    news:   a TV-news style screen (news_ui.py): the big story slides on every
+            interval, a ticker of the newest headlines scrolls along the bottom.
+    A swipe (or a tap on the news arrows) goes forward or back by hand.
     Pictures fill the frame (cropped, never stretched) and are scaled once per size."""
+    TICKER_PX_S = 95  # ticker speed
     def __init__(self, folder, photo_s, news_s):
         super().__init__()
         self.paths = self.base_paths = pictures(folder)
@@ -161,6 +177,11 @@ class Scenic(QWidget):
         self.anim = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=1100, easingCurve=QEasingCurve.InOutCubic)
         self.anim.valueChanged.connect(self._step); self.anim.finished.connect(self._done)
         self.timer = QTimer(self); self.timer.timeout.connect(self.next)
+        self.dir = 1; self.press = None  # slide direction (1 forward, -1 back); where a touch began
+        self.painter = NewsPainter(); self.breaking = []; self.tick_x = 0.0; self.tick_t = time.monotonic()
+        self.seen = None; self.flashes = []; self.flash = None; self.flash_t = 0.0  # big BREAKING NEWS banners
+        self.market = None; self.market_note = ""  # the market band's data, or why there is none
+        self.ticker = QTimer(self); self.ticker.timeout.connect(self._tick)
     def set_festival(self, key):
         """Festival wallpapers: pictures in assets/festivals/<key>/ if any, else
         one painted in code ("@key"). None returns to the normal pictures."""
@@ -169,6 +190,47 @@ class Scenic(QWidget):
     def set_mode(self, mode):
         self.mode = mode; self.anim.stop(); self.pos = 0.0
         self.timer.start(self.intervals[mode]); self.update()
+        if mode == "news": self.tick_t = time.monotonic(); self.ticker.start(33)
+        else: self.ticker.stop()
+    def set_market(self, data):
+        self.market = data
+        if self.mode == "news": self.update(0, self.height() - BOTTOM_H, self.width(), BOTTOM_H)
+    def set_market_note(self, note):
+        self.market_note = note
+        if not self.market and self.mode == "news": self.update()
+    def set_breaking(self, items):
+        """New ticker headlines; ones fresher than FLASH_MIN that were not there before are flashed big
+        (on the first list after start-up only the newest, so a restart does not replay them all)."""
+        fresh = [i for i in items if i.get("time") and time.time() - i["time"] < FLASH_MIN * 60]
+        new = [i for i in fresh if self.seen is not None and i["title"] not in self.seen] if self.seen is not None else fresh[:1]
+        self.seen = {i["title"] for i in items} | (self.seen or set())
+        self.flashes += sorted(new, key=lambda i: i["time"])
+        self.breaking = items; self.update()
+    FLASH_S = 12
+    def _tick(self):
+        now = time.monotonic(); self.tick_x += self.TICKER_PX_S * (now - self.tick_t); self.tick_t = now
+        if self.flash and now - self.flash_t > self.FLASH_S: self.flash = None; self.update()
+        if not self.flash and self.flashes and self.mode == "news":
+            self.flash = self.flashes.pop(0); self.flash_t = now
+        if not self.isVisible(): return
+        if self.flash: self.update()  # the banner fades and pulses
+        else: self.update(0, self.height() - TICKER_H, self.width(), TICKER_H)  # only the ticker
+    def flash_alpha(self):
+        age = time.monotonic() - self.flash_t
+        return max(0.0, min(1.0, age / 0.4, (self.FLASH_S - age) / 0.6))
+    def go(self, d):
+        """One step forward (1) or back (-1), by hand: the automatic turn waits a full interval again."""
+        if len(self.news if self.mode == "news" else self.paths) < 2 or self.anim.state() == QVariantAnimation.Running: return
+        self.dir = d; self.anim.start(); self.timer.start(self.intervals[self.mode])
+    def mousePressEvent(self, e):
+        self.press = e.position()
+    def mouseReleaseEvent(self, e):
+        if self.press is None: return
+        dx = e.position().x() - self.press.x(); start = self.press; self.press = None
+        if abs(dx) > 80: self.go(-1 if dx > 0 else 1)  # swipe left: next; swipe right: previous
+        elif self.mode == "news":
+            d = self.painter.arrow_at(start.x(), start.y(), self.width())
+            if d: self.go(d)
     def set_news(self, items):
         self.news = items; self.news_idx = 0 if self.news_idx >= len(items) else self.news_idx; self.update()
     def set_news_note(self, text):
@@ -176,11 +238,11 @@ class Scenic(QWidget):
         if not self.news: self.update()
     def next(self):
         if len(self.news if self.mode == "news" else self.paths) < 2: return
-        if self.anim.state() != QVariantAnimation.Running: self.anim.start()
+        if self.anim.state() != QVariantAnimation.Running: self.dir = 1; self.anim.start()
     def _step(self, v): self.pos = v; self.update()
     def _done(self):
-        if self.mode == "news": self.news_idx = (self.news_idx + 1) % len(self.news)
-        else: self.idx = (self.idx + 1) % len(self.paths)
+        if self.mode == "news": self.news_idx = (self.news_idx + self.dir) % len(self.news)
+        else: self.idx = (self.idx + self.dir) % len(self.paths)
         self.pos = 0.0; self.update()
     def _pixmap(self, i):
         key = (i, self.width(), self.height())
@@ -200,14 +262,14 @@ class Scenic(QWidget):
             p.drawText(r, Qt.AlignCenter, "Add landscape pictures to assets/scenic/"); return
         shift = int(self.pos * w); n = len(self.paths)
         if self.mode == "news": self._paint_news(p, w, h, shift); return
-        p.drawPixmap(-shift, 0, self._pixmap(self.idx))
-        if shift: p.drawPixmap(w - shift, 0, self._pixmap((self.idx + 1) % n))
+        p.drawPixmap(-shift * self.dir, 0, self._pixmap(self.idx))
+        if shift: p.drawPixmap((w - shift) * self.dir, 0, self._pixmap((self.idx + self.dir) % n))
         # Soft shades so the clock (top) and dots/credit/events (bottom) read on any picture.
         for y0, y1, a0, a1 in ((0, h * 0.45, 160, 0), (h * 0.65, h, 0, 150)):
             g = QLinearGradient(0, y0, 0, y1); g.setColorAt(0, QColor(0, 0, 0, a0)); g.setColorAt(1, QColor(0, 0, 0, a1))
             p.fillRect(QRectF(0, y0, w, y1 - y0), g)
         # page dots, bottom centre; the active one moves halfway through a slide
-        active = self.idx if self.pos < 0.5 else (self.idx + 1) % n
+        active = self.idx if self.pos < 0.5 else (self.idx + self.dir) % n
         p.setPen(Qt.NoPen)
         for i in range(n if n > 1 else 0):
             p.setBrush(QColor(255, 255, 255, 240 if i == active else 110)); rad = 5 if i == active else 3.5
@@ -216,38 +278,25 @@ class Scenic(QWidget):
         if name:
             f = QFont(self.font()); f.setPixelSize(12); p.setFont(f); p.setPen(QColor(255, 255, 255, 190))
             p.drawText(QRectF(28, h - 38, w / 2, 24), Qt.AlignLeft | Qt.AlignVCenter, f"Photo: {name} / Unsplash")
-    # Headline area: right of the shortcut rail, below the clock, clear of the events card.
-    NEWS_X = 170
-    def _font(self, px, bold=False):
-        f = QFont(self.font()); f.setPixelSize(px); f.setBold(bold); return f
     def _paint_news(self, p, w, h, shift):
-        p.drawPixmap(0, 0, self._pixmap(self.idx)); p.fillRect(QRectF(0, 0, w, h), QColor(6, 10, 18, 190))
-        x, top, width = self.NEWS_X, int(h * 0.30), int(w * 0.6)
-        if not self.news:
-            p.setFont(self._font(26)); p.setPen(QColor(255, 255, 255, 200))
-            p.drawText(QRectF(x, top, width, 120), Qt.TextWordWrap, self.news_note); return
         n = len(self.news)
-        p.save(); p.setClipRect(QRectF(x - 20, top - 10, w - x, h * 0.42))
-        stories = [(self.news_idx, -shift)] + ([((self.news_idx + 1) % n, w - shift)] if shift else [])
-        for i, off in stories:
-            s = self.news[i]
-            p.setFont(self._font(15, True)); p.setPen(QColor(PALETTE["tag"]))
-            tag = "   ·   ".join(t for t in (s.get("region", "").upper(), s.get("genre", "").upper(), s.get("source", ""),
-                                             ago(s.get("time", 0))) if t)
-            p.drawText(QRectF(x + off, top, width, 24), Qt.AlignLeft | Qt.AlignVCenter, tag)
-            p.setFont(self._font(44, True)); p.setPen(QColor("#ffffff"))
-            p.drawText(QRectF(x + off, top + 34, width, h * 0.42 - 44), Qt.TextWordWrap, s["title"])
-        p.restore()
-        # up next: the following three headlines, one line each
-        y = top + h * 0.42 + 12
-        p.setFont(self._font(13, True)); p.setPen(QColor(255, 255, 255, 150)); p.drawText(QRectF(x, y, width, 20), Qt.AlignLeft, "UP NEXT")
-        p.setFont(self._font(19)); fm = p.fontMetrics()
-        for k in range(1, min(4, n)):
-            s = self.news[(self.news_idx + k) % n]; y += 34
-            p.setPen(QColor(255, 255, 255, 215 - k * 30))
-            p.drawText(QRectF(x, y, width, 30), Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(s["title"], Qt.ElideRight, width))
-        p.setFont(self._font(12)); p.setPen(QColor(255, 255, 255, 150))
-        p.drawText(QRectF(0, h - 38, w, 24), Qt.AlignCenter, f"{self.news_idx + 1} / {n}   ·   Google News")
+        if not n:
+            p.fillRect(QRectF(0, 0, w, h), QColor("#070b14"))
+            f = QFont(self.font()); f.setPixelSize(26); p.setFont(f); p.setPen(QColor(255, 255, 255, 200))
+            p.drawText(QRectF(230, 260, w * 0.6, 160), Qt.TextWordWrap, self.news_note)
+        else:
+            cur = self.news[self.news_idx % n]; other = self.news[(self.news_idx + self.dir) % n]
+            p.drawPixmap(0, 0, self.painter.backdrop(cur, w, h))
+            if shift:  # the next story's backdrop fades in while the story slides
+                p.setOpacity(self.pos); p.drawPixmap(0, 0, self.painter.backdrop(other, w, h)); p.setOpacity(1.0)
+            p.save(); p.setClipRect(QRectF(150, 0, w - 150, h - BOTTOM_H))
+            self.painter.paint_story(p, cur, w, h, -shift * self.dir, self.font(), self.news_idx % n, n)
+            if shift: self.painter.paint_story(p, other, w, h, (w - shift) * self.dir, self.font(), (self.news_idx + self.dir) % n, n)
+            p.restore()
+            if n > 1: self.painter.paint_arrows(p, w, self.font())
+        if self.flash: self.painter.paint_flash(p, self.flash, w, self.font(), self.flash_alpha(), time.monotonic())
+        self.painter.paint_market(p, self.market, self.market_note, w, h, self.font())
+        self.painter.paint_ticker(p, self.breaking, w, h, self.tick_x, self.font(), time.monotonic())
     def resizeEvent(self, e):
         self.cache.clear(); super().resizeEvent(e)
 
@@ -334,6 +383,7 @@ class Dashboard(QFrame):
     open_door = Signal()
     open_events = Signal()
     view_changed = Signal(str)  # "news" or "photos"
+    logged = Signal(list)  # the recent events' lines, newest first
     def __init__(self, view="news"):
         super().__init__(); self.setObjectName("dashboard")
         root = QVBoxLayout(self); root.setContentsMargins(0,0,0,0)
@@ -341,7 +391,7 @@ class Dashboard(QFrame):
         self.scenic=Scenic(ROOT/sc.get("folder","assets/scenic"), sc.get("interval_seconds",15),
                            CFG.get("news",{}).get("interval_seconds",12)); root.addWidget(self.scenic)
 
-        over = QHBoxLayout(self.scenic); over.setContentsMargins(28,28,28,52); over.setSpacing(28)
+        over = QHBoxLayout(self.scenic); over.setContentsMargins(28,28,28,BOTTOM_H+16); over.setSpacing(28)
         rail = QFrame(); rail.setObjectName("glass"); rl = QVBoxLayout(rail); rl.setContentsMargins(10,10,10,10); rl.setSpacing(10)
         door = tile("⌂","Front door"); door.clicked.connect(self.open_door.emit); rl.addWidget(door)
         # Switches between news and photos; it is labelled with the view it switches to.
@@ -383,58 +433,7 @@ class Dashboard(QFrame):
         old=self.events.text()
         lines=[] if old=="No recent events" else old.splitlines()
         self.events.setText("\n".join((["• "+time.strftime("%H:%M")+"  "+msg]+lines)[:4]))
-
-class RingPage(QFrame):
-    """Visitor alert: live camera on the left, countdown and a large STOP on the right."""
-    stop = Signal()
-    talk = Signal()
-    def __init__(self):
-        super().__init__(); self.setObjectName("ring")
-        root=QHBoxLayout(self); root.setContentsMargins(24,24,24,24); root.setSpacing(24)
-
-        video=QFrame(); video.setObjectName("video"); vl=QVBoxLayout(video); vl.setContentsMargins(0,0,0,0)
-        self.view=label("","videoView"); self.view.setAlignment(Qt.AlignCenter)
-        self.view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)  # never resized by the frames it shows
-        vl.addWidget(self.view, 1)  # the picture takes all the room; the note below only shows with a message
-        self.cam_note=label("", "camNote"); self.cam_note.setAlignment(Qt.AlignCenter)
-        self.cam_note.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed); self.cam_note.hide(); vl.addWidget(self.cam_note)
-        root.addWidget(video,3)
-
-        side=QVBoxLayout(); side.setSpacing(10)
-        self.section=label("FRONT DOOR · VISITOR ALERT","section"); side.addWidget(self.section)
-        side.addStretch()
-        self.bell=label("♪","bell"); self.bell.setAlignment(Qt.AlignCenter); side.addWidget(self.bell)
-        self.title=label("Someone is at the door","ringTitle"); self.title.setAlignment(Qt.AlignCenter); self.title.setWordWrap(True); side.addWidget(self.title)
-        self.subtitle=label("Bell is playing","secondary"); self.subtitle.setAlignment(Qt.AlignCenter); side.addWidget(self.subtitle)
-        self.count=label("00:30","count"); self.count.setAlignment(Qt.AlignCenter); side.addWidget(self.count)
-        self.call_note=label("","secondary"); self.call_note.setAlignment(Qt.AlignCenter); self.call_note.setWordWrap(True); side.addWidget(self.call_note)
-        side.addStretch()
-        self.talk_btn=QPushButton("☎  Talk"); self.talk_btn.setObjectName("talk"); self.talk_btn.setMinimumHeight(96)
-        self.talk_btn.clicked.connect(self.talk.emit); side.addWidget(self.talk_btn)
-        self.stop_btn=QPushButton("STOP"); self.stop_btn.setObjectName("stop"); self.stop_btn.setMinimumHeight(120)
-        self.stop_btn.clicked.connect(self.stop.emit); side.addWidget(self.stop_btn)
-        panel=QFrame(); panel.setObjectName("side"); panel.setLayout(side); panel.setFixedWidth(330)
-        root.addWidget(panel)
-        self.last=None
-    def set_mode(self, ringing):
-        """Visitor alert (countdown, STOP) or the live door view from the Front door tile (CLOSE)."""
-        self.section.setText("FRONT DOOR · VISITOR ALERT" if ringing else "FRONT DOOR · LIVE")
-        self.bell.setText("♪" if ringing else "⌂"); self.title.setText("Someone is at the door" if ringing else "Front door")
-        self.subtitle.setVisible(ringing); self.count.setVisible(ringing); self.stop_btn.setText("STOP" if ringing else "CLOSE")
-        self.talk_btn.setVisible(SETTINGS.get("intercom", False))  # trial feature, off by default (Settings > Speaker)
-    def set_call(self, active, note=""):
-        self.talk_btn.setText("☎  End call" if active else "☎  Talk"); self.talk_btn.setProperty("calling", active)
-        self.talk_btn.style().unpolish(self.talk_btn); self.talk_btn.style().polish(self.talk_btn); self.call_note.setText(note)
-    def show_frame(self, img):
-        self.last=img
-        self.view.setPixmap(QPixmap.fromImage(img).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-    def clear_video(self, note):
-        self.last=None; self.view.clear(); self.set_note(note)
-    def set_note(self, text):
-        self.cam_note.setText(text); self.cam_note.setVisible(bool(text))
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if self.last is not None: self.show_frame(self.last)
+        self.logged.emit(self.events.text().splitlines())
 
 class Window(QWidget):
     def __init__(self):
@@ -442,17 +441,23 @@ class Window(QWidget):
         self.active=False; self.until=0; self.event_id=None; self.camera=None
         self.audio=Audio(); self.bt=Bluetooth(); self.door_ip=None
         self.intercom=Intercom()
-        self.stack=QStackedWidget(); self.home=Dashboard(SETTINGS.get("home_view","news")); self.ring=RingPage()
+        self.stack=QStackedWidget(); self.home=Dashboard(SETTINGS.get("home_view","news")); self.ring=RingPage(lambda: SETTINGS.get("intercom", False))
         self.home.view_changed.connect(lambda v: (SETTINGS.__setitem__("home_view", v), save_settings()))
         self.news=News(SETTINGS, ROOT/"news_cache.json")
-        self.news.updated.connect(self.home.scenic.set_news)
+        self.news.updated.connect(self.home.scenic.set_news); self.news.breaking.connect(self.home.scenic.set_breaking)
+        self.markets=Markets(); self.markets.updated.connect(self.home.scenic.set_market)
+        self.markets.status.connect(self.home.scenic.set_market_note); self.markets.start()
         self.news.failed.connect(lambda why: self.home.scenic.set_news_note(f"News unavailable ({why}). Retrying every minute."))
         self.news.start()
         self.notifier=Notifier(SETTINGS, CFG.get("notify",{}).get("server"), CFG.get("notify",{}).get("token"))
         self.settings=SettingsPage(self.bt, TONES, SETTINGS, save_settings, self.preview, self.send_outdoor, self.news.refresh,
                                    CFG.get("festivals"), self.notifier)
         self.settings.speaker.test_cb=lambda: self.preview(self.audio.tone())
+        self.settings.webaccess.changed.connect(self.apply_web_access); QTimer.singleShot(0, self.apply_web_access)
         self.recorder=Recorder(lambda: camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url",""))
+        # the dashboard in a browser (Settings > Web access); actions come back here like taps
+        self.web=Web(recorder_mod.DIR, lambda: camera_cfg.url(which="sub") or camera_cfg.url())
+        self.door_online=None
         self.events_page=EventsPage(self.recorder)
         self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
         self.events_page.back.connect(lambda: self.stack.setCurrentWidget(self.home))
@@ -465,6 +470,7 @@ class Window(QWidget):
         self.muted_until=0.0
         self.assistant=Assistant()
         self.mic=QPushButton("◉",self); self.mic.setObjectName("mic"); self.mic.setFixedSize(84,84); self.mic.clicked.connect(self.assistant.listen)
+        self.stack.currentChanged.connect(lambda _i: self.mic.setVisible(self.stack.currentWidget() is not self.settings))  # not over the settings menu
         self.bubble=QLabel("",self); self.bubble.setObjectName("bubble"); self.bubble.setAlignment(Qt.AlignCenter); self.bubble.hide()
         self.bubble_timer=QTimer(self); self.bubble_timer.setSingleShot(True); self.bubble_timer.timeout.connect(self.bubble.hide)
         self.assistant.state.connect(self.on_voice_state); self.assistant.heard.connect(lambda t: self.say(f"“{t}”" if t else "…", 0))
@@ -480,6 +486,7 @@ class Window(QWidget):
         self.mqtt=MQTT(self.sig); self.mqtt.start()
         self.clock_timer=QTimer(self); self.clock_timer.timeout.connect(self.home.update_clock); self.clock_timer.start(1000); self.home.update_clock()
         self.tick=QTimer(self); self.tick.timeout.connect(self.countdown); self.tick.start(200)
+        self.audio_idle=QTimer(self); self.audio_idle.timeout.connect(self.audio.release_if_idle); self.audio_idle.start(5000)
         self.demo=QTimer(self)
         if CFG.get("demo_mode",False): self.demo.timeout.connect(self.demo_ring); self.demo.start(18000)
         # Festival themes: checked every minute; the result goes to the doorbell as a retained message.
@@ -488,6 +495,9 @@ class Window(QWidget):
         self.settings.festival_changed.connect(self.check_festival); self.settings.festival_preview.connect(self.preview_festival)
         self.fest_timer=QTimer(self); self.fest_timer.timeout.connect(self.check_festival); self.fest_timer.start(60000)
         self.check_festival()
+        self.webapp=WebApp(self, SETTINGS, save_settings, TONES)  # the dashboard in browsers; last: it uses everything above
+    def cfg_camera_url(self): return CFG.get("camera",{}).get("rtsp_url","")
+    def cfg_festivals(self): return CFG.get("festivals")
     def preview_festival(self, key):
         """Show a festival for one minute (Settings > Festivals > Try)."""
         self.fest_preview=(key, time.monotonic()+60) if key else None
@@ -521,7 +531,8 @@ class Window(QWidget):
         c=CFG["mqtt"]
         if topic in (T_OUT_STATE, T_OUT_SCAN, T_OUT_ONLINE):
             o=self.settings.outdoor
-            if topic==T_OUT_ONLINE: o.on_online(payload.strip()=="online"); return
+            if topic==T_OUT_ONLINE:
+                o.on_online(payload.strip()=="online"); self.door_online=payload.strip()=="online"; self.web_publish(); return
             try: data=json.loads(payload)
             except ValueError: return
             if topic==T_OUT_STATE and data.get("ip"): self.door_ip=data["ip"]  # where call audio goes
@@ -542,11 +553,11 @@ class Window(QWidget):
     # ---------- voice ----------
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self.mic.move(24, self.height()-self.mic.height()-24); self.mic.raise_()
+        self.mic.move(24, self.height()-self.mic.height()-BOTTOM_H-16); self.mic.raise_()  # above the market band and ticker
         self.place_bubble()
     def place_bubble(self):
         self.bubble.adjustSize(); w=min(self.width()-240, max(420, self.bubble.width()+60))
-        self.bubble.setFixedSize(w, 72); self.bubble.move((self.width()-w)//2, self.height()-72-32); self.bubble.raise_()
+        self.bubble.setFixedSize(w, 72); self.bubble.move((self.width()-w)//2, self.height()-72-BOTTOM_H-24); self.bubble.raise_()
     def say(self, text, hide_after=4000):
         """Shows the bubble; hide_after 0 keeps it up (more is coming)."""
         self.bubble.setText(text); self.bubble.show(); self.place_bubble(); self.bubble_timer.stop()
@@ -566,6 +577,7 @@ class Window(QWidget):
             self.home.add_event(f"Bell muted until {time.strftime('%I:%M %p', time.localtime(time.time()+args*60)).lstrip('0')}")
         elif action=="unmute":
             self.muted_until=0.0; self.home.add_event("Bell on again")
+        if action in ("mute", "unmute"): self.web_publish()
         elif action=="events":
             self.events_page.set_filter(args); self.stack.setCurrentWidget(self.events_page)
         elif action=="play_last":
@@ -579,6 +591,14 @@ class Window(QWidget):
             if not self.active: self.stop_camera(); self.stack.setCurrentWidget(self.home)
         elif action=="settings":
             self.stack.setCurrentWidget(self.settings)
+    # ---------- web access ----------
+    def apply_web_access(self):
+        import web as webmod
+        if SETTINGS.get("web_access", False) and webmod.has_password(): self.web.start(); self.webapp.publish_all()
+        else: self.web.stop()
+    def web_publish(self):
+        """Browsers see the change (called on every change, each second while ringing)."""
+        if self.web.server: self.webapp.state()
     def open_door(self):
         """Front door tile: live camera and the intercom, no ring."""
         if self.active: return
@@ -607,7 +627,7 @@ class Window(QWidget):
         self.ring.clear_video("Connecting to camera…")
         self.camera=Camera(url); self.camera.frame.connect(self.on_frame); self.camera.state.connect(self.ring.set_note); self.camera.start()
     def on_frame(self, img):
-        self.ring.show_frame(img)
+        self.ring.show_frame(img); self.webapp.frame(img)
         if self.camera: self.camera.idle.set()
     def stop_camera(self):
         if self.camera:
@@ -615,9 +635,10 @@ class Window(QWidget):
             cam.frame.disconnect(); cam.state.disconnect(); cam.stop()
         self.ring.clear_video("")
     def start_ring(self,seconds,source="MQTT",event_id=None):
-        seconds=max(1,min(3600,int(seconds))); self.until=time.monotonic()+seconds; self.event_id=event_id
+        seconds=max(1,min(3600,int(seconds))); self.until=time.monotonic()+seconds; self.event_id=event_id; self.ring_total=seconds
         self.ring.set_mode(True); self.ring.set_call(self.intercom.active)
-        self.ring.count.setText(self.fmt(seconds)); self.ring.subtitle.setText(f"Bell is playing · {source}")
+        self.ring.set_count(seconds, seconds)
+        self.ring.set_subtitle("Bell muted" if time.monotonic() < self.muted_until else "The bell is ringing inside")
         self.stack.setCurrentWidget(self.ring); self.start_camera()
         if self.intercom.active: pass  # no bell tone over a call
         elif time.monotonic() < self.muted_until: self.home.add_event("Bell muted: no chime")
@@ -628,11 +649,13 @@ class Window(QWidget):
         if source=="MQTT":  # a real press (not the demo): tell the phones
             self.notifier.send("Doorbell", "Someone is at the front door · "+time.strftime("%I:%M %p").lstrip("0"))
         self.mqtt.publish(CFG["mqtt"]["topic_status"],{"state":"ringing","remaining_seconds":seconds,"event_id":event_id})
+        self.web_publish(); self.webapp.ring_started(source)
         self.demo.stop()
     def countdown(self):
         if not self.active:return
         if self.intercom.active: self.until=max(self.until, time.monotonic()+1)  # the page stays while talking
-        remaining=max(0,int(self.until-time.monotonic()+0.999)); self.ring.count.setText(self.fmt(remaining))
+        remaining=max(0,int(self.until-time.monotonic()+0.999))
+        if remaining!=getattr(self,"_last_left",None): self._last_left=remaining; self.ring.set_count(remaining); self.web_publish()
         if remaining<=0:self.stop_ring("TIMER")
     def stop_ring(self,source="TOUCH"):
         if self.intercom.active and source in ("TOUCH", "MQTT"): self.end_call()
@@ -645,12 +668,13 @@ class Window(QWidget):
         if source=="TOUCH":
             self.mqtt.publish(CFG["mqtt"]["topic_stop"],{"command":"stop","source":"indoor","event_id":self.event_id})
         self.mqtt.publish(CFG["mqtt"]["topic_status"],{"state":"idle","reason":source.lower(),"event_id":self.event_id})
+        self.web_publish(); self.webapp.ring_ended(source)
         self.event_id=None
         if CFG.get("demo_mode",False): self.demo.start(18000)
     @staticmethod
     def fmt(s): return f"{s//60:02d}:{s%60:02d}"
     def closeEvent(self,event):
-        self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
+        self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
 
 # Colours of every page; a festival swaps in its own set (see Window.check_festival).
 PALETTES = {
@@ -690,6 +714,11 @@ STYLE = Template("""
     QLabel#bell {font-size:72px;}
     QLabel#ringTitle {font-size:28px;font-weight:700;color:#f8fafc;}
     QLabel#count {font-size:56px;font-weight:700;color:$count;}
+    QPushButton#ringStop {background:#e5484d;color:white;border:0;border-radius:52px;font-size:34px;font-weight:800;letter-spacing:3px;}
+    QPushButton#ringStop:pressed {background:#c43c40;}
+    QPushButton#ringTalk {background:rgba(47,163,107,230);color:white;border:0;border-radius:52px;font-size:28px;font-weight:700;}
+    QPushButton#ringTalk:pressed {background:#258556;}
+    QPushButton#ringTalk[calling="true"] {background:#e8952a;}
     QPushButton#stop {background:#e85d5d;color:white;border:0;border-radius:24px;font-size:34px;font-weight:800;letter-spacing:4px;}
     QPushButton#stop:pressed {background:#c94343;}
     QPushButton#talk {background:#2fa36b;color:white;border:0;border-radius:24px;font-size:26px;font-weight:700;}
@@ -698,6 +727,8 @@ STYLE = Template("""
     QPushButton {background:$button;color:#edf3fb;border:1px solid $border;border-radius:14px;font-size:17px;padding:0 18px;}
     QPushButton:pressed {background:$line;}
     QPushButton:checked {background:$accent;border-color:$accent;color:$on_accent;}
+    QPushButton#subtab {background:transparent;border:0;border-bottom:3px solid transparent;border-radius:0;font-size:19px;color:$muted;}
+    QPushButton#subtab:checked {color:#ffffff;border-bottom:3px solid $accent;background:transparent;}
     QPushButton#nav {text-align:left;padding-left:24px;font-size:19px;}
     QLabel#pageTitle {font-size:30px;font-weight:700;}
     QPushButton#eventCard {background:$panel;border:1px solid $line;border-radius:18px;padding:0;}
@@ -711,12 +742,14 @@ STYLE = Template("""
     QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;}
     QLabel#eventTime {font-size:14px;color:$muted;background:transparent;}
     QFrame#player {background:$bg;}
+    QLabel#webUrl {font-size:24px;font-weight:700;color:$count;}
     QLabel#camValue {font-size:22px;font-weight:600;}
     QLabel#camPreview {background:#000;border:1px solid $line;border-radius:14px;color:$muted;}
     QLabel#topicName {font-size:34px;font-weight:700;color:$count;padding:4px 0;}
     QFrame#panel {background:$panel;border:1px solid $line;border-radius:18px;}
     QFrame#panel QLabel, QFrame#panel QSlider {background:transparent;}
     QFrame#panel QScrollArea, QFrame#panel QScrollArea > QWidget > QWidget {background:transparent;}
+    QFrame#panel QStackedWidget, QFrame#panel QStackedWidget > QWidget {background:transparent;}
     QListWidget#list {background:$list;border:1px solid $line;border-radius:12px;font-size:18px;}
     QListWidget#list::item {min-height:58px;padding-left:12px;}
     QListWidget#list::item:selected {background:$accent;color:$on_accent;border-radius:10px;}

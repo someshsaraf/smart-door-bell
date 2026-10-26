@@ -109,9 +109,18 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 </table>
 
 - 🕒 **Ambient home screen** — large clock and date over a full-screen backdrop; one tap switches **News ⇄ Photos**
-- 📰 **News your way** — mix any of *Global, India, Karnataka, Bangalore* with any of *Top stories, Politics, Business, Technology, Sports, Automobiles, Entertainment, Science, Health* (Google News, no API key, cached for offline starts)
+- 📰 **News like a TV channel** — the top stories of *NDTV, Times of India, BBC, Yahoo News* and *Google News* (by region
+  and topic; optionally also *The Hindu, Hindustan Times*) one at a time with photo, channel badge and summary; swipe or tap ‹ › to
+  go back and forth. A big red **BREAKING** ticker scrolls the newest headlines along the bottom (*LATEST* when nothing
+  is under 90 minutes old), and a new story under 20 minutes old flashes as a **BREAKING NEWS** banner. From the
+  channels' public RSS feeds, no login; cached for offline starts
+- 📈 **Market band** — **NIFTY 50** and **SENSEX** and the NIFTY's top gainers and losers above the ticker, every 2 minutes
+  during market hours (the last session's close otherwise), from Yahoo Finance via `yfinance` — no account. The NIFTY 50
+  members come from NSE's published list. Yahoo's Indian prices can lag the exchange by a few minutes
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
-- 🚪 **Visitor alert** — live VIGI camera feed (RTSP) filling the screen, countdown and a big **STOP** that also returns the doorbell to its main screen
+- 🚪 **Visitor alert** — the door camera full screen like a video call: *VISITOR AT THE DOOR* with the ring time, a REC
+  badge while it records, a countdown ring and a big **STOP** (which also returns the doorbell to its main screen);
+  the **Front door** tile opens the same view live, any time
 - 🎙️ **Voice commands, all on the Pi** — tap ◉ (bottom left) and say *"Stop the bell"*, *"Mute the bell for an hour"*,
   *"Show me all events"*, *"Show events from yesterday / last Monday / 20 October / this week"*, *"Play the last
   recording"*, *"Who is at the front door"*, *"Go home"*. Speech recognition is Whisper on the Pi's CPU (~2 s per
@@ -124,6 +133,20 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🔊 **16 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor), festive (Jingle Bells, Auld Lang Syne) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
 - 🎙️ **Two-way talk (trial, off by default: Settings → Speaker)** — **Talk** on the visitor screen, or any time from the **Front door** tile (live camera + intercom). The Bluetooth speaker switches to its hands-free microphone for the call and back to full-quality playback afterwards
 - 📱 **Phone notifications** — a push alert on every ring through the free [ntfy](https://ntfy.sh) app, no account needed: subscribe to the topic shown under **Settings → Phone** (own server: `sudo bash Indoor/tools/setup_ntfy.sh` installs ntfy on the Pi with logins, then set `"notify": {"server": "...", "token": "tk_..."}` in `config.json`)
+- 💻 **The whole dashboard on a phone or laptop** — the Pi serves it as a web app on port 8080, made for phones as
+  well as large screens:
+  - the news with its market band and breaking ticker, and the photos;
+  - the front door live, and mute for 1 h / 8 h;
+  - the recordings, to filter, play and delete;
+  - every setting, including the outdoor unit.
+
+  A change made there shows on the wall at once, and the other way round. When someone rings, an open page shows the
+  live camera with a countdown and **STOP**. Switch it on under **Settings → Web access**: set a password, tap **On**,
+  then open the address shown or scan its QR code. It works at home over Wi-Fi, and from anywhere with
+  [Tailscale](https://tailscale.com) on the phone.
+- 🔔 **Ring alerts on phones, no app needed** — a notification with the visitor's picture (Android), **Stop the
+  bell**, and a tap to see the door live, even with the page closed (Web Push, Android and iPhone). Browsers allow
+  this only on HTTPS, which Tailscale provides; see *Ring alerts on phones* below
 - 📋 **Recent events** — the last rings at a glance
 - 🪔 **Festival themes** — sparks, snow or confetti and a greeting during festivals (see below)
 - 🚀 **Starts at boot** — restarts itself if it ever crashes
@@ -263,7 +286,12 @@ doorbell/
 ├── Indoor/                  Raspberry Pi dashboard (Python, PySide6)
 │   ├── app.py                 dashboard, ring screen, camera, MQTT
 │   ├── settings_ui.py         settings screens and on-screen keyboard
-│   ├── news.py · bluetooth.py news feed · speaker pairing
+│   ├── news.py · news_ui.py   news feeds · TV-style news painting
+│   ├── markets.py             NIFTY / SENSEX band (yfinance)
+│   ├── ring_ui.py             visitor screen
+│   ├── web.py · webapp.py     web server · the dashboard's data and actions for browsers
+│   ├── push.py · web/         ring alerts (Web Push) · the web app and its service worker
+│   ├── bluetooth.py           speaker pairing
 │   ├── assets/                tones, scenic photos (with credits)
 │   └── autostart/             start at boot
 └── docs/images/             pictures used in this README
@@ -284,6 +312,21 @@ doorbell/
   4. Once the doorbell shows *Connected*: `sudo bash ~/Indoor/tools/setup_mqtt_tls.sh --lock` limits plain MQTT to the Pi itself.
 - **Notifications** go to ntfy.sh over HTTPS; a self-hosted server is reached over Tailscale (WireGuard). Settings → Phone shows which.
   The ntfy server itself can read the alert text ("Someone is at the front door · time"), nothing more.
+- **Web access** is off until switched on, and it needs a password. The password is stored only as a salted scrypt
+  hash in `secrets.json`. A login stays for 90 days in an HttpOnly cookie, and changing the password logs every device out.
+  The page is plain HTTP and is meant for the home network and Tailscale (encrypted by WireGuard): do not forward
+  port 8080 on the router. With `ufw` on, `setup_pi.sh` allows 8080 from the home network and Tailscale only.
+- **Ring alerts on phones** (Web Push) need the page on HTTPS. Tailscale gives the Pi a real certificate:
+  1. In the Tailscale admin console → **DNS**: enable **MagicDNS** and **HTTPS Certificates** (once).
+  2. On the Pi: `sudo tailscale serve --bg 8080`, so the page is at `https://<pi-name>.<tailnet>.ts.net`. This is
+     only reachable inside your tailnet; it is not Tailscale Funnel.
+  3. On each phone, with Tailscale on, open that address and log in. **Android**: Settings → Web access & alerts →
+     **Turn on ring alerts**. **iPhone** (iOS 16.4+): Safari → Share → **Add to Home Screen**, open *Doorbell* from
+     the home screen, then turn alerts on there.
+
+  Each alert is encrypted for the one device; Google's, Apple's or Mozilla's push service only passes it on. The
+  notification's STOP works only for the ring it belongs to. The signing key (`web_push_key.pem`) and the device
+  list (`web_push.json`) stay on the Pi, readable by nobody else.
 - The trial intercom's audio (UDP 5004) is not encrypted yet; it is off by default.
 - Both devices must be able to reach each other: avoid guest Wi-Fi networks, which block devices from talking to each other.
 

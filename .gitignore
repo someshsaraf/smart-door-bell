@@ -11,6 +11,11 @@ Indoor/secrets.json
 # Indoor dashboard: per-device state and caches
 Indoor/settings.json
 Indoor/news_cache.json
+Indoor/news_images/
+Indoor/markets_tokens.json
+Indoor/web_sessions.json
+Indoor/web_push.json
+Indoor/web_push_key.pem
 Indoor/app.log
 Indoor/app.log.old
 # your own ring tones (e.g. film songs you own) stay on your Pi

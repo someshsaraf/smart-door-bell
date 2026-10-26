@@ -3,3 +3,8 @@ paho-mqtt>=2.0
 pygame>=2.5
 # headless: the GUI build bundles its own Qt plugins, which clash with PySide6
 opencv-python-headless>=4.8
+# voice and market band (installed into ~/Indoor/.venv by setup_pi.sh)
+faster-whisper>=1.0
+yfinance>=0.2.60
+qrcode>=7.4
+pywebpush
