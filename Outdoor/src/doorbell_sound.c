@@ -106,6 +106,9 @@ typedef struct {
 static ring_t rx, mic;
 static uint8_t *call_frame; /* one driver frame of far-end audio */
 static volatile bool in_call;
+/* The microphone's last few seconds, always: read by doorbell_listen.c at its own pace. */
+static uint8_t *hist;
+static volatile uint32_t hist_head; /* bytes written since the microphone started */
 
 static void ring_put(ring_t *r, const uint8_t *data, uint32_t len)
 {
@@ -126,8 +129,16 @@ static void ring_get(ring_t *r, uint8_t *out, uint32_t len)
 static void mic_cb(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status, uint8_t *data, uint32_t len)
 {
     (void)status;
-    if (in_call && type == TDL_AUDIO_FRAME_FORMAT_PCM)
+    if (type != TDL_AUDIO_FRAME_FORMAT_PCM)
+        return;
+    if (in_call)
         ring_put(&mic, data, len);
+    if (hist) {
+        uint32_t h = hist_head;
+        for (uint32_t i = 0; i < len; i++)
+            hist[(h + i) & (SOUND_MIC_HISTORY - 1)] = data[i];
+        hist_head = h + len; /* published after the bytes: a reader never sees unwritten ones */
+    }
 }
 
 /* Plays far-end audio while the call lasts, smoothing over network jitter. */
@@ -220,7 +231,8 @@ void sound_init(uint32_t chime, uint8_t volume)
     rx.buf = tkl_system_psram_malloc(RING_BYTES);
     mic.buf = tkl_system_psram_malloc(RING_BYTES);
     call_frame = tkl_system_psram_malloc(info.frame_size);
-    if (!mix || !pcm || !rx.buf || !mic.buf || !call_frame) {
+    hist = tkl_system_psram_malloc(SOUND_MIC_HISTORY);
+    if (!mix || !pcm || !rx.buf || !mic.buf || !call_frame || !hist) {
         PR_ERR("[SOUND] no memory for chimes");
         audio = NULL;
         return;
@@ -302,6 +314,23 @@ void sound_call_feed(const uint8_t *data, uint32_t len)
 {
     if (in_call)
         ring_put(&rx, data, len);
+}
+
+uint32_t sound_mic_head(void)
+{
+    return hist_head;
+}
+
+bool sound_mic_read(uint32_t pos, uint8_t *out, uint32_t len)
+{
+    if (!hist)
+        return false;
+    uint32_t head = hist_head;
+    if (head - pos < len || head - pos > SOUND_MIC_HISTORY - 2048)
+        return false; /* not there yet, or about to be overwritten */
+    for (uint32_t i = 0; i < len; i++)
+        out[i] = hist[(pos + i) & (SOUND_MIC_HISTORY - 1)];
+    return hist_head - pos <= SOUND_MIC_HISTORY - 2048; /* still valid after copying */
 }
 
 uint32_t sound_call_mic(uint8_t *out, uint32_t len)

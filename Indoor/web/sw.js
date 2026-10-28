@@ -8,7 +8,7 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (_) { d = { title: "Doorbell", body: e.data ? e.data.text() : "" }; }
-  const opts = { body: d.body || "", tag: "doorbell", icon: "/icon-192.png", badge: "/badge-96.png", data: d,
+  const opts = { body: d.body || "", tag: d.tag || "doorbell", icon: "/icon-192.png", badge: "/badge-96.png", data: d,
     timestamp: (d.time || Date.now() / 1000) * 1000 };
   if (d.type === "ring") {
     opts.requireInteraction = true;

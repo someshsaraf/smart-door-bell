@@ -28,7 +28,7 @@ if [ "$src" != "$dst" ]; then
     # program files only; per-Pi state stays (see .gitignore: settings, secrets, keys, recordings, caches)
     rsync -a --exclude settings.json --exclude secrets.json --exclude mqtt_psk.txt --exclude news_cache.json \
           --exclude 'app.log*' --exclude recordings/ --exclude visitors/ --exclude models/ --exclude .venv/ \
-          --exclude news_images/ --exclude markets_tokens.json --exclude web_sessions.json --exclude web_push.json --exclude web_push_key.pem \
+          --exclude news_images/ --exclude markets_tokens.json --exclude web_sessions.json --exclude web_push.json --exclude web_push_key.pem --exclude door_audio_sync.json \
           --exclude 'assets/tones/mine/' --exclude __pycache__/ "$src/" "$dst/"
     [ -f "$dst/mqtt_psk.txt" ] || { [ -f "$src/mqtt_psk.txt" ] && cp "$src/mqtt_psk.txt" "$dst/" && chmod 600 "$dst/mqtt_psk.txt"; } || true
 fi
@@ -52,6 +52,8 @@ if sudo sh -c 'command -v ufw' >/dev/null && sudo ufw status | grep -q "Status: 
     # web access (Settings > Web access): the home network and Tailscale only
     sudo ufw allow from "$net" to any port 8080 proto tcp >/dev/null
     ip link show tailscale0 >/dev/null 2>&1 && sudo ufw allow in on tailscale0 to any port 8080 proto tcp >/dev/null
+    # the doorbell's microphone (UDP 5006) and the trial intercom (UDP 5004), from the doorbell's network
+    sudo ufw allow from "$net" to any port 5004:5006 proto udp >/dev/null
 fi
 
 echo "== 5/5 start at boot, and start now"

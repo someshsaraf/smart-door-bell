@@ -9,6 +9,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QScroller,
                                QSizePolicy, QVBoxLayout, QWidget)
 from recorder import CLIP_S, DIR
+from door_audio import play_file_audio
 try:
     import cv2
 except ImportError:
@@ -81,7 +82,7 @@ class Player(QFrame):
     deleted = Signal(dict)
 
     def __init__(self, parent, entry):
-        super().__init__(parent); self.setObjectName("player"); self.entry = entry; self.thread = None; self.last = None
+        super().__init__(parent); self.setObjectName("player"); self.entry = entry; self.thread = None; self.last = None; self.sound = ()
         self.setGeometry(parent.rect())
         root = QVBoxLayout(self); root.setContentsMargins(24, 20, 24, 20); root.setSpacing(12)
         head = QHBoxLayout()
@@ -100,12 +101,18 @@ class Player(QFrame):
         if not self.entry.get("video") or cv2 is None:
             self.view.setText(self.entry.get("note") or "No recording"); return
         self.thread = Playback(DIR / self.entry["video"]); self.thread.frame.connect(self.show_frame); self.thread.start()
+        try: self.sound = play_file_audio(DIR / self.entry["video"])  # its sound on the speaker, started with the picture
+        except OSError: self.sound = ()
 
     def show_frame(self, img):
         self.last = img
         self.view.setPixmap(QPixmap.fromImage(img).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def stop(self):
+        for p in self.sound:
+            try: p.kill()
+            except OSError: pass
+        self.sound = ()
         if self.thread:
             self.thread.requestInterruption(); self.thread.wait(2000); self.thread = None
 

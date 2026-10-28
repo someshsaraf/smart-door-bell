@@ -29,6 +29,7 @@
 #include "doorbell_net.h"
 #include "doorbell_sound.h"
 #include "doorbell_talk.h"
+#include "doorbell_listen.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1321,6 +1322,8 @@ static void start_ring(void)
         return; /* repeated presses by a visitor do not restart or cancel it */
     is_ringing = true;
     net_publish_start(ring_seconds);
+    if (ns.broker[0]) /* the indoor unit records the visitor: the microphone from 3 s before the press */
+        listen_start(ns.broker, DOORBELL_LISTEN_PORT, LISTEN_PRESS_S, true);
     use_chime(ring_chime());  /* a Sound page preview may have loaded another */
     sound_play(chime_repeat); /* the visitor hears that it rang */
     set_ring_animation(true);
@@ -1544,6 +1547,12 @@ static void net_poll_cb(lv_timer_t *t)
             talk_start(ns.talk_host, ns.talk_port);
         else
             talk_stop();
+    }
+    if (ns.listen_seq != prev.listen_seq) {
+        if (ns.listen_on && ns.listen_host[0])
+            listen_start(ns.listen_host, ns.listen_port, ns.listen_secs, false);
+        else
+            listen_stop();
     }
     if (talk_active() != prev_talk) { /* the date line says so while a call lasts */
         prev_talk = talk_active();
@@ -2206,6 +2215,7 @@ void user_main(void)
     sound_init(chime_idx, chime_volume); /* after board_register_hardware() and the saved settings */
     loaded_chime = chime_idx;
     talk_init();
+    listen_init();
     net_start();
     report_settings();
 

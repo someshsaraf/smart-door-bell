@@ -16,14 +16,14 @@ from PySide6.QtCore import QBuffer, QIODevice, QObject, QTimer, Qt
 import camera_cfg, push
 from festivals import FESTIVALS, upcoming
 from news import CHANNELS, DEFAULT_CHANNELS, GENRES, REGIONS
-from recorder import CLIP_CHOICES, CLIP_S
+from recorder import CLIP_S, PRE_S, RING_S
 from settings_ui import (OUTDOOR_BELLS, OUTDOOR_CHIMES, OUTDOOR_DURATIONS, OUTDOOR_STYLES, OUTDOOR_THEMES, OUTDOOR_VOLUMES,
                          BELL_ICONS, list_tones, web_addresses)
 from web import secure_url
 
 ASYNC = object()  # an action that answers later, from a worker thread
 DEFAULTS = {"tone": "ding_dong.wav", "intercom": False, "news_channels": DEFAULT_CHANNELS, "news_regions": ["india"],
-            "news_genres": ["top"], "record_seconds": CLIP_S, "notify": False, "festival_themes": True,
+            "news_genres": ["top"], "record_seconds": CLIP_S, "record_audio": True, "offline_alert_min": 15, "notify": False, "festival_themes": True,
             "festival_tones": True, "home_view": "news"}
 OUTDOOR_KEYS = {"theme", "bell_color", "bell_style", "glow", "chime", "chime_repeat", "volume", "ring_seconds", "screen_off"}
 
@@ -87,7 +87,7 @@ class WebApp(QObject):
         self.web.publish("breaking", [{"title": i["title"], "source": i.get("source", ""), "time": i.get("time")} for i in items])
 
     def events(self):
-        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note")}
+        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note", "audio")}
                                     for e in sorted(self.w.recorder.entries, key=lambda e: -e["time"])[:200]])
 
     def on_log(self, lines):
@@ -119,7 +119,7 @@ class WebApp(QObject):
             "channels": [{"key": k, "name": v[0], "color": v[1]} for k, v in CHANNELS.items()],
             "regions": [{"key": k, "name": v[0]} for k, v in REGIONS.items()],
             "genres": [{"key": k, "name": v[0]} for k, v in GENRES.items()],
-            "record_choices": list(CLIP_CHOICES),
+            "record": {"pre": PRE_S, "ring_default": RING_S},
             "festivals": [{"key": k, "name": v[0]} for k, v in FESTIVALS.items()],
             "upcoming": [{"name": FESTIVALS[k][0], "first": f"{a:%a %d %b}", "last": f"{b:%a %d %b %Y}"}
                          for k, a, b in upcoming(__import__("datetime").date.today(), self.w.cfg_festivals())],
@@ -199,11 +199,14 @@ class WebApp(QObject):
         lists = {"news_channels": (CHANNELS, DEFAULT_CHANNELS), "news_regions": (REGIONS, ["india"]), "news_genres": (GENRES, ["top"])}
         if key == "tone":
             if value not in {rel for _, _, rel in list_tones(self.tones)}: return {"ok": False, "error": "no such tone"}
-        elif key in ("intercom", "notify", "festival_themes", "festival_tones"): value = bool(value)
+        elif key in ("intercom", "notify", "festival_themes", "festival_tones", "record_audio"): value = bool(value)
         elif key in lists:
             value = [k for k in value if k in lists[key][0]] or lists[key][1]
-        elif key == "record_seconds":
-            if value not in CLIP_CHOICES: return {"ok": False, "error": "not a choice"}
+        elif key == "offline_alert_min":
+            if value not in (0, 5, 15, 60): return {"ok": False, "error": "not a choice"}
+        elif key == "record_seconds":  # 1 s up to the ring's length
+            top = max(1, int(self.w.settings.outdoor.state.get("ring_seconds") or RING_S))
+            if not isinstance(value, int) or not 1 <= value <= top: return {"ok": False, "error": f"1 to {top} seconds"}
         elif key == "home_view":
             if value not in ("news", "photos"): return {"ok": False}
             self.w.home._set_view(value); return {"ok": True}  # the wall saves it itself
@@ -213,6 +216,7 @@ class WebApp(QObject):
         self.save()
         if key in lists: self.w.news.refresh()
         if key.startswith("festival_"): self.w.check_festival()
+        if key == "record_audio": self.w.recorder.buffer.restart()
         self.w.settings.sync(); self.settings_part(); self.state()
 
     def do_play_tone(self, d, _r):

@@ -25,6 +25,7 @@ class RingPage(QWidget):
         self.call_note = QLabel(self); self.call_note.hide()  # holds the call's status text (read by the window)
         self.stop_btn = QPushButton("■  STOP", self); self.stop_btn.setObjectName("ringStop"); self.stop_btn.clicked.connect(self.stop.emit)
         self.talk_btn = QPushButton("☎  Talk", self); self.talk_btn.setObjectName("ringTalk"); self.talk_btn.clicked.connect(self.talk.emit)
+        self.sound_note = ""  # about the door's sound, which plays whenever the picture shows
         self.pulse = QTimer(self); self.pulse.timeout.connect(self.update)
 
     # ---------- what the window tells it ----------
@@ -46,6 +47,10 @@ class RingPage(QWidget):
         self.talk_btn.setText("☎  End call" if active else "☎  Talk"); self.talk_btn.setProperty("calling", active)
         self.talk_btn.style().unpolish(self.talk_btn); self.talk_btn.style().polish(self.talk_btn)
         self.call_note.setText(note); self.update()
+
+    def set_sound(self, note):
+        """A problem with the door's sound, for the message line ("" when fine)."""
+        if note != self.sound_note: self.sound_note = note; self.update()
 
     def show_frame(self, img):
         """A camera frame: fitted to the height, its blurred copy behind it (redone every 8 frames)."""
@@ -80,7 +85,7 @@ class RingPage(QWidget):
         w, h = self.width(), self.height()
         right = w - 250 if self.ringing else w - 40  # the countdown ring sits at the far right while ringing
         self.stop_btn.setGeometry(int(right - 280), int(h - 156), 280, 104)
-        self.talk_btn.setGeometry(int(right - 280 - 24 - 240), int(h - 156), 240, 104)
+        self.talk_btn.setGeometry(int(right - 280 - 24 - 240), int(h - 156), 240, 104)  # left of STOP (when on)
 
     # ---------- painting ----------
     def _font(self, px, bold=False):
@@ -145,7 +150,7 @@ class RingPage(QWidget):
         p.drawText(QRectF(left, h - 210, width, 70), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(p.font()).elidedText("Someone is at the door" if self.ringing else "Front door", Qt.ElideRight, int(width)))
         p.setPen(QColor(255, 255, 255, 200)); p.setFont(self._font(23))
-        line = " · ".join(t for t in (self.subtitle if self.ringing else "", self.call_note.text()) if t)
+        line = " · ".join(t for t in (self.subtitle if self.ringing else "", self.call_note.text(), self.sound_note) if t)
         p.drawText(QRectF(left + 2, h - 136, width, 40), Qt.AlignLeft | Qt.AlignVCenter, line)
 
     def _paint_countdown(self, p, t):

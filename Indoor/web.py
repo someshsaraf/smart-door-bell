@@ -12,7 +12,8 @@ Settings > Web access and stored only as a salted scrypt hash in secrets.json;
 sessions (one per device, kept 90 days) in web_sessions.json.
 
 The live view is MJPEG made by one shared ffmpeg from the camera's small
-substream, started when the first viewer arrives and stopped after the last."""
+substream, started when the first viewer arrives and stopped after the last;
+its sound, the doorbell's microphone, is MP3 from one shared encoder too."""
 import hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -153,6 +154,65 @@ class LiveView:
             return self.seq, self.frame
 
 
+class LiveAudio:
+    """The doorbell's microphone (door_audio.py) as one MP3 stream shared by all listeners. It is fed
+    in real time, silence included, so a browser's player never stalls between words. It runs as far
+    behind real time as the live picture does, less what the browser's player buffers itself."""
+    PLAYER_BUFFER = 0.3
+
+    def delay(self):
+        return max(0.15, self.door.live_delay() - self.PLAYER_BUFFER)
+
+    def __init__(self, door):
+        self.door = door; self.lock = threading.Lock(); self.cond = threading.Condition(self.lock)
+        self.listeners = 0; self.proc = None; self.chunks = []; self.seq = 0
+
+    def join(self):
+        with self.lock:
+            self.listeners += 1
+            if self.proc is None and self.door and shutil.which("ffmpeg"):
+                self.proc = subprocess.Popen(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "-",
+                                              "-c:a", "libmp3lame", "-b:a", "48k", "-f", "mp3", "-flush_packets", "1", "-"],
+                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                threading.Thread(target=self._feed, args=(self.proc,), daemon=True).start()
+                threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+
+    def leave(self):
+        with self.lock:
+            self.listeners -= 1
+            if self.listeners <= 0 and self.proc:
+                self.proc.kill(); self.proc = None; self.listeners = 0
+
+    def _feed(self, proc):
+        step = 0.02; t = time.time() - self.delay()
+        while proc.poll() is None:
+            target = time.time() - self.delay()
+            if target - t > 0.5: t = target - step
+            while t + step <= target:
+                pcm, _ = self.door.pcm(t, t + step); t += step
+                try: proc.stdin.write(pcm.tobytes())
+                except (BrokenPipeError, OSError): return
+            try: proc.stdin.flush()
+            except (BrokenPipeError, OSError): return
+            time.sleep(step / 2)
+
+    def _read(self, proc):
+        while True:
+            data = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(1024)
+            if not data: break
+            with self.cond:
+                self.chunks = (self.chunks + [data])[-64:]; self.seq += 1; self.cond.notify_all()
+        with self.cond: self.cond.notify_all()
+
+    def next(self, after, timeout=8):
+        """MP3 bytes produced after chunk number `after`: (new number, bytes or None when it ended)."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq != after or self.proc is None, timeout)
+            if self.proc is None: return after, None
+            new = self.chunks[-min(len(self.chunks), self.seq - after):] if after else self.chunks[-1:]
+            return self.seq, b"".join(new)
+
+
 class Reply:
     """The answer to one action, filled in on the window's thread and awaited by the request's thread."""
     def __init__(self): self.done = threading.Event(); self.value = None
@@ -166,9 +226,9 @@ class Web(QObject):
     # (what, {"data": request JSON, "reply": Reply}); handled by webapp.WebApp on the window's thread
     action = Signal(str, object)
 
-    def __init__(self, recorder_dir, url_fn):
+    def __init__(self, recorder_dir, url_fn, door=None):
         super().__init__(); self.recorder_dir = Path(recorder_dir)
-        self.sessions = Sessions(); self.live = LiveView(url_fn)
+        self.sessions = Sessions(); self.live = LiveView(url_fn); self.live_audio = LiveAudio(door)
         self.parts = {}; self.version = 0; self.cond = threading.Condition()
         self.ring_token = None  # lets a notification's STOP work without a session, for this ring only
         self.snaps = {}  # token: (jpeg bytes, expiry), the visitor's picture shown in notifications
@@ -262,6 +322,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if 0 < since <= self.web.version: self.web.cond.wait_for(lambda: self.web.version != since, 25)
                 return self._send(200, self.web.changes(since))
         if path == "/api/live.mjpg": return self._live()
+        if path == "/api/live_audio.mp3": return self._live_audio()
         if path == "/api/push/key":
             ok = push.available()
             return self._send(200, {"available": ok, "key": push.public_key() if ok else ""})
@@ -319,6 +380,21 @@ class _Handler(BaseHTTPRequestHandler):
             pass
         finally:
             live.leave(); self.close_connection = True
+
+    def _live_audio(self):
+        la = self.web.live_audio; la.join(); seq = 0
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg"); self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close"); self.end_headers()
+            while True:
+                seq, data = la.next(seq)
+                if data is None: break
+                if data: self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            la.leave(); self.close_connection = True
 
     # -- POST --
     def do_POST(self):

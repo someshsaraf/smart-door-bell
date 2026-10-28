@@ -16,6 +16,7 @@ Indoor/markets_tokens.json
 Indoor/web_sessions.json
 Indoor/web_push.json
 Indoor/web_push_key.pem
+Indoor/door_audio_sync.json
 Indoor/app.log
 Indoor/app.log.old
 # your own ring tones (e.g. film songs you own) stay on your Pi

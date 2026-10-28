@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, Signal
 
 PORT = 5004
 FRAME = 640  # bytes: 20 ms at 16 kHz, 16-bit mono
-PCM = ["--rate", "16000", "--channels", "1", "--format", "s16"]
+PCM = ["--raw", "--rate", "16000", "--channels", "1", "--format", "s16"]  # --raw: plain samples, not a sound file
 
 
 def run(*cmd):

@@ -245,7 +245,6 @@ class CameraPanel(QWidget):
     def __init__(self, settings, save):
         super().__init__()
         import camera_cfg
-        from recorder import CLIP_CHOICES, CLIP_S
         self.cfg = camera_cfg; self.cam = camera_cfg.load(); self.settings = settings; self.save_settings = save
         lay = QVBoxLayout(self); lay.setSpacing(10)
         lay.addWidget(label("Camera", "sectionTitle"))
@@ -263,10 +262,17 @@ class CameraPanel(QWidget):
                 f = button("Find", h=56); f.setFixedWidth(110); f.clicked.connect(self.find); row.addWidget(f)
             left.addLayout(row)
         self.found_row = QHBoxLayout(); left.addLayout(self.found_row)
-        left.addWidget(label("RECORDING WHEN THE BELL RINGS", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.len_btns = {}
-        for secs in CLIP_CHOICES:
-            b = button(f"{secs} s", "choice", True, 52); b.setChecked(settings.get("record_seconds", CLIP_S) == secs); self.len_btns[secs] = b
-            group.addButton(b); row.addWidget(b); b.clicked.connect(lambda _=False, s=secs: self.set_length(s))
+        left.addWidget(label("RECORDING AFTER THE PRESS: PICTURE AND SOUND", "section")); row = QHBoxLayout()
+        for d in (-5, -1, 0, 1, 5):  # 0: the length itself
+            if d == 0:
+                self.len_value = label("", "camValue"); self.len_value.setAlignment(Qt.AlignCenter); row.addWidget(self.len_value, 1); continue
+            b = button(("−" if d < 0 else "+") + ("5" if abs(d) == 5 else ""), h=52); b.setFixedWidth(90)
+            b.clicked.connect(lambda _=False, d=d: self.step_length(d)); row.addWidget(b)
+        left.addLayout(row); self.show_length()
+        left.addWidget(label("SOUND IN RECORDINGS (the doorbell's microphone)", "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.audio_btns = {}
+        for value, text in ((True, "On"), (False, "Off: picture only")):
+            b = button(text, "choice", True, 52); b.setChecked(settings.get("record_audio", True) == value); group.addButton(b); row.addWidget(b)
+            b.clicked.connect(lambda _=False, v=value: self.set_audio(v)); self.audio_btns[value] = b
         left.addLayout(row)
         row = QHBoxLayout()
         t = button("Test connection", h=64); t.clicked.connect(self.test); row.addWidget(t)
@@ -339,11 +345,27 @@ class CameraPanel(QWidget):
         if self.on_saved: self.on_saved()
 
     def sync(self):
-        b = self.len_btns.get(self.settings.get("record_seconds"))
-        if b: b.setChecked(True)
-    def set_length(self, secs):
-        self.settings["record_seconds"] = secs; self.save_settings()
-        self.msg.setText(f"✓ Each ring is recorded for {secs} seconds")
+        self.show_length()
+        self.audio_btns[bool(self.settings.get("record_audio", True))].setChecked(True)
+    on_audio = None  # set by the window: the recording buffer starts again with or without sound
+    def set_audio(self, on):
+        self.settings["record_audio"] = on; self.save_settings()
+        if self.on_audio: self.on_audio()
+        self.msg.setText("✓ Recordings get the doorbell's sound" if on else "✓ Recordings are picture only from now on")
+    ring_seconds = None  # set by the settings page: the doorbell's ring length, the longest recording
+    def length(self):
+        """(seconds recorded after a press, the most allowed)"""
+        from recorder import CLIP_S, RING_S
+        top = max(1, int((self.ring_seconds() if self.ring_seconds else 0) or RING_S))
+        return min(self.settings.get("record_seconds", CLIP_S), top), top
+    def show_length(self):
+        from recorder import PRE_S
+        secs, top = self.length()
+        self.len_value.setText(f"{secs} s   (1 – {top} s, the ring's length; plus {PRE_S} s before the press)")
+    def step_length(self, d):
+        secs, top = self.length(); secs = max(1, min(top, secs + d))
+        self.settings["record_seconds"] = secs; self.save_settings(); self.show_length()
+        self.msg.setText(f"✓ Each ring is recorded for {secs} s after the press")
 
 def web_addresses():
     """http addresses of this Pi's web page: home network first, then Tailscale (if any)."""
@@ -458,6 +480,12 @@ class PhonePanel(QWidget):
             self.onoff[value] = b
             b.clicked.connect(lambda _=False, value=value: self.set_on(value))
         lay.addLayout(row)
+        lay.addWidget(label("ALERT WHEN THE DOORBELL IS OFFLINE (no power, no Wi-Fi) FOR", "section"))
+        row = QHBoxLayout(); group = QButtonGroup(self); self.offline_btns = {}
+        for value, text in ((0, "Never"), (5, "5 min"), (15, "15 min"), (60, "1 hour")):
+            b = button(text, "choice", True, 64); b.setChecked(settings.get("offline_alert_min", 15) == value); group.addButton(b); row.addWidget(b)
+            b.clicked.connect(lambda _=False, v=value: (self.settings.__setitem__("offline_alert_min", v), self.save())); self.offline_btns[value] = b
+        lay.addLayout(row)
         row = QHBoxLayout()
         test = button("Send a test notification", h=64); test.clicked.connect(self.test); row.addWidget(test)
         fresh = button("New topic (stops the old one)", h=64); fresh.clicked.connect(self.change_topic); row.addWidget(fresh)
@@ -467,6 +495,8 @@ class PhonePanel(QWidget):
         self.show_topic()
     def sync(self):
         self.onoff[bool(self.settings.get("notify", False))].setChecked(True); self.show_topic()
+        b = self.offline_btns.get(self.settings.get("offline_alert_min", 15))
+        if b: b.setChecked(True)
     def show_topic(self):
         self.topic.setText(self.settings["notify_topic"])
         self.server.setText(f"Server: {self.notifier.server}   ·   {self.notifier.encryption()}")
@@ -694,6 +724,7 @@ class SettingsPage(QFrame):
         self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
         self.phone = PhonePanel(settings, save, notifier)
         self.camera = CameraPanel(settings, save)
+        self.camera.ring_seconds = lambda: self.outdoor.state.get("ring_seconds")
         self.webaccess = WebAccessPanel(settings, save)
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),

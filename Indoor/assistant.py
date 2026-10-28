@@ -87,7 +87,7 @@ class Assistant(QObject):
 
     def _record(self, target):
         """Float32 samples of one utterance from the microphone `target`, or None if nobody spoke."""
-        p = subprocess.Popen(["pw-record", "--target", target, "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
+        p = subprocess.Popen(["pw-record", "--raw", "--target", target, "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         chunks, floor, spoke, quiet_since, start = [], None, False, None, time.monotonic()
         try:

@@ -42,7 +42,8 @@ from settings_ui import SettingsPage, this_ip
 from intercom import Intercom, PORT as TALK_PORT
 from notify import Notifier
 import camera_cfg
-from recorder import Recorder, CLIP_S
+from recorder import Recorder, CLIP_S, PRE_S
+from door_audio import DoorAudio, LivePlayer, PORT as LISTEN_PORT
 from events_ui import EventsPage
 from assistant import Assistant
 
@@ -454,12 +455,16 @@ class Window(QWidget):
                                    CFG.get("festivals"), self.notifier)
         self.settings.speaker.test_cb=lambda: self.preview(self.audio.tone())
         self.settings.webaccess.changed.connect(self.apply_web_access); QTimer.singleShot(0, self.apply_web_access)
-        self.recorder=Recorder(lambda: camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url",""))
+        # the doorbell's microphone: recorded with the camera's picture, heard while the camera view is open
+        self.door_audio=DoorAudio(); self.door_live=LivePlayer(self.door_audio); self.listen_until=0.0; self.listen_sent=0.0
+        self.recorder=Recorder(lambda: camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url",""),
+                               lambda: SETTINGS.get("record_audio", True), self.door_audio)
         # the dashboard in a browser (Settings > Web access); actions come back here like taps
-        self.web=Web(recorder_mod.DIR, lambda: camera_cfg.url(which="sub") or camera_cfg.url())
+        self.web=Web(recorder_mod.DIR, lambda: camera_cfg.url(which="sub") or camera_cfg.url(), self.door_audio)
         self.door_online=None
         self.events_page=EventsPage(self.recorder)
         self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
+        self.settings.camera.on_audio=self.recorder.buffer.restart  # sound in recordings switched on or off
         self.events_page.back.connect(lambda: self.stack.setCurrentWidget(self.home))
         self.home.open_events.connect(lambda: (self.events_page.set_filter(None), self.stack.setCurrentWidget(self.events_page)))
         for page in (self.home, self.ring, self.settings, self.events_page): self.stack.addWidget(page)
@@ -487,6 +492,11 @@ class Window(QWidget):
         self.clock_timer=QTimer(self); self.clock_timer.timeout.connect(self.home.update_clock); self.clock_timer.start(1000); self.home.update_clock()
         self.tick=QTimer(self); self.tick.timeout.connect(self.countdown); self.tick.start(200)
         self.audio_idle=QTimer(self); self.audio_idle.timeout.connect(self.audio.release_if_idle); self.audio_idle.start(5000)
+        self.listen_timer=QTimer(self); self.listen_timer.timeout.connect(self.listen_tick); self.listen_timer.start(2000)
+        # Is the doorbell there? Its broker connection has a last will: "offline" ~45 s after it vanishes.
+        self.mqtt_ok=False; self.offline_since=time.time(); self.offline_alerted=False  # nothing heard yet counts as gone
+        self.sig.status.connect(lambda ok, _m: setattr(self, "mqtt_ok", ok))
+        self.door_watch=QTimer(self); self.door_watch.timeout.connect(self.check_door); self.door_watch.start(30000)
         self.demo=QTimer(self)
         if CFG.get("demo_mode",False): self.demo.timeout.connect(self.demo_ring); self.demo.start(18000)
         # Festival themes: checked every minute; the result goes to the doorbell as a retained message.
@@ -532,7 +542,8 @@ class Window(QWidget):
         if topic in (T_OUT_STATE, T_OUT_SCAN, T_OUT_ONLINE):
             o=self.settings.outdoor
             if topic==T_OUT_ONLINE:
-                o.on_online(payload.strip()=="online"); self.door_online=payload.strip()=="online"; self.web_publish(); return
+                online=payload.strip()=="online"
+                o.on_online(online); self.door_online=online; self.door_status_changed(online); self.web_publish(); return
             try: data=json.loads(payload)
             except ValueError: return
             if topic==T_OUT_STATE and data.get("ip"): self.door_ip=data["ip"]  # where call audio goes
@@ -602,12 +613,62 @@ class Window(QWidget):
     def open_door(self):
         """Front door tile: live camera and the intercom, no ring."""
         if self.active: return
-        self.ring.set_mode(False); self.ring.set_call(False); self.stack.setCurrentWidget(self.ring); self.start_camera()
+        self.ring.set_mode(False); self.ring.set_call(False); self.stack.setCurrentWidget(self.ring); self.start_camera(); self.start_sound()
+    # ---------- is the doorbell there? ----------
+    def door_status_changed(self, online):
+        now=time.time()
+        if online:
+            if self.offline_alerted:
+                gone=fmt_span(now-self.offline_since)
+                self.alert_phones("Doorbell back online", f"The doorbell is working again; it was offline for {gone}.", "white_check_mark", "default")
+                self.home.add_event(f"Doorbell back online (offline {gone})")
+            self.offline_since=None; self.offline_alerted=False
+        elif self.offline_since is None:
+            self.offline_since=now; self.offline_alerted=False; self.home.add_event("Doorbell went offline")
+    def check_door(self):
+        """Alerts the phones once the doorbell has been gone for the time chosen in Settings > Phone."""
+        wait=SETTINGS.get("offline_alert_min", 15)
+        if not wait or self.offline_since is None or self.offline_alerted or not self.mqtt_ok: return
+        if time.time()-self.offline_since < wait*60: return
+        self.offline_alerted=True
+        since=time.strftime("%I:%M %p", time.localtime(self.offline_since)).lstrip("0")
+        heard="has not been heard from" if self.door_online is None else "has been offline"
+        self.alert_phones("Doorbell offline", f"The doorbell {heard} since {since}: rings will not reach you. "
+                          "Check its power and Wi-Fi.", "warning", "high")
+    def alert_phones(self, title, text, tags, priority):
+        """ntfy (Settings > Phone) and the browsers registered for ring alerts."""
+        self.notifier.send(title, text, tags=tags, priority=priority)
+        import push
+        push.send({"type": "health", "tag": "doorbell-health", "title": title, "body": text, "time": time.time()},
+                  self.webapp.sub_claim(), ttl=6*3600, urgency="high" if priority=="high" else "normal")
+        print(f"Phones alerted: {title}", flush=True)
+    # ---------- the doorbell's microphone ----------
+    def want_listen(self, seconds):
+        """The doorbell's microphone is needed for `seconds` more (it is asked again until then)."""
+        self.listen_until=max(self.listen_until, time.time()+seconds); self.listen_tick()
+    def listen_tick(self):
+        now=time.time()
+        if self.stack.currentWidget() is self.ring or self.door_live.active: self.listen_until=max(self.listen_until, now+6)
+        if self.web.live_audio.listeners: self.listen_until=max(self.listen_until, now+6)
+        if now<self.listen_until:
+            if now-self.listen_sent>8 and self.mqtt.publish(T_TALK, {"command": "listen", "host": this_ip(), "port": LISTEN_PORT, "seconds": 15}):
+                self.listen_sent=now
+        elif self.listen_sent:
+            self.mqtt.publish(T_TALK, {"command": "listen_end"}); self.listen_sent=0.0
+        if self.door_live.active:
+            self.ring.set_sound("" if self.door_audio.receiving() or now-self.sound_started<4
+                                else "No sound from the doorbell yet (its firmware may need updating)")
+    def start_sound(self):
+        """The door's sound plays with its picture, mixed with the chime while ringing."""
+        if self.intercom.active or self.door_live.active: return  # a call has its own sound
+        self.door_live.start(); self.sound_started=time.time(); self.want_listen(10)
+    def stop_sound(self):
+        self.door_live.stop(); self.ring.set_sound("")
     def toggle_call(self):
         if self.intercom.active: self.end_call(); return
         if not SETTINGS.get("intercom", False): return
         if not self.door_ip: self.ring.set_call(False, "Doorbell address not known yet (it is sent when the doorbell connects)"); return
-        self.audio.stop()  # the bell tone gives way to the call, and the speaker is switched to hands-free
+        self.stop_sound(); self.audio.stop()  # the bell tone gives way to the call, and the speaker is switched to hands-free
         if pygame and pygame.mixer.get_init(): pygame.mixer.quit()
         if not self.mqtt.publish(T_TALK, {"command": "start", "host": this_ip(), "port": TALK_PORT}):
             self.ring.set_call(False, "Not connected to the doorbell (MQTT)"); return
@@ -619,6 +680,7 @@ class Window(QWidget):
         note=self.ring.call_note.text()
         self.ring.set_call(False, note if note.startswith("Call failed") else "Call ended")
         if self.active: self.until=max(self.until, time.monotonic()+10)  # a moment to see the door before the page closes
+        if self.stack.currentWidget() is self.ring: self.start_sound()  # back to hearing the door
     def start_camera(self):
         if self.camera: return
         url=camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url","")  # Settings > Camera, else config.json
@@ -630,6 +692,7 @@ class Window(QWidget):
         self.ring.show_frame(img); self.webapp.frame(img)
         if self.camera: self.camera.idle.set()
     def stop_camera(self):
+        self.stop_sound()
         if self.camera:
             cam=self.camera; self.camera=None
             cam.frame.disconnect(); cam.state.disconnect(); cam.stop()
@@ -639,13 +702,15 @@ class Window(QWidget):
         self.ring.set_mode(True); self.ring.set_call(self.intercom.active)
         self.ring.set_count(seconds, seconds)
         self.ring.set_subtitle("Bell muted" if time.monotonic() < self.muted_until else "The bell is ringing inside")
-        self.stack.setCurrentWidget(self.ring); self.start_camera()
+        self.stack.setCurrentWidget(self.ring); self.start_camera(); self.start_sound()
         if self.intercom.active: pass  # no bell tone over a call
         elif time.monotonic() < self.muted_until: self.home.add_event("Bell muted: no chime")
         else: self.audio.play()
         self.active=True; self.home.add_event(f"Doorbell started ({seconds}s)")
         if source=="MQTT":  # a real press: record it (Events page)
-            self.recorder.record("ring", SETTINGS.get("record_seconds", CLIP_S))  # with 3 s from before the press
+            clip=max(1, min(SETTINGS.get("record_seconds", CLIP_S), seconds))  # never longer than the ring
+            self.recorder.record("ring", clip)  # with 3 s from before the press
+            self.want_listen(clip+PRE_S+5)  # the doorbell streams from the press; keep it going
         if source=="MQTT":  # a real press (not the demo): tell the phones
             self.notifier.send("Doorbell", "Someone is at the front door · "+time.strftime("%I:%M %p").lstrip("0"))
         self.mqtt.publish(CFG["mqtt"]["topic_status"],{"state":"ringing","remaining_seconds":seconds,"event_id":event_id})
@@ -673,8 +738,12 @@ class Window(QWidget):
         if CFG.get("demo_mode",False): self.demo.start(18000)
     @staticmethod
     def fmt(s): return f"{s//60:02d}:{s%60:02d}"
+def fmt_span(seconds):
+    """3 h 20 min, 12 min, 1 day 4 h"""
+    m=int(seconds//60); d, m=divmod(m, 1440); h, m=divmod(m, 60)
+    return " ".join(t for t in (f"{d} day{'s' if d>1 else ''}" if d else "", f"{h} h" if h else "", f"{m} min" if (m or not (d or h)) and not d else "") if t)
     def closeEvent(self,event):
-        self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
+        self.door_live.stop(); self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
 
 # Colours of every page; a festival swaps in its own set (see Window.check_festival).
 PALETTES = {

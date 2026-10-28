@@ -37,3 +37,12 @@ void sound_call_end(void);
 bool sound_in_call(void);
 void sound_call_feed(const uint8_t *pcm, uint32_t len); /* far end, any length */
 uint32_t sound_call_mic(uint8_t *out, uint32_t len);    /* near end: `len` bytes or 0 if not yet there */
+
+/*
+ * Microphone history: the last SOUND_MIC_HISTORY bytes (16 kHz mono 16-bit PCM),
+ * filled all the time, calls or not. Positions count bytes since the microphone
+ * started; read from any thread.
+ */
+#define SOUND_MIC_HISTORY (256 * 1024) /* ~8 s, a power of two */
+uint32_t sound_mic_head(void);                               /* bytes recorded so far */
+bool sound_mic_read(uint32_t pos, uint8_t *out, uint32_t len); /* false: not there yet or overwritten */

@@ -79,6 +79,12 @@ typedef struct {
     bool talk_on;       /* start (true) or end */
     char talk_host[16]; /* the indoor unit's address for the audio */
     uint16_t talk_port;
+    /* Microphone to the indoor unit (camera view open there): bumps listen_seq. */
+    uint32_t listen_seq;
+    bool listen_on;       /* start / extend (true) or end */
+    char listen_host[16];
+    uint16_t listen_port;
+    uint32_t listen_secs;
 } net_status_t;
 
 /* Call once after tal_kv_init(); connects with the saved Wi-Fi if any. */

@@ -2,7 +2,8 @@
 recordings/<date>/, with a thumbnail, listed in recordings/index.json.
 
 A clip holds PRE_S seconds from before the press plus the length chosen under
-Settings > Camera (settings.json "record_seconds", CLIP_S by default) after it.
+Settings > Camera (settings.json "record_seconds", CLIP_S by default, at most
+the ring's length) after it, picture and sound alike.
 That is possible because Buffer keeps the last minute of the camera all the
 time: ffmpeg copies the camera's own H.264 stream (no re-encoding: full
 quality, ~1 % CPU) into short MPEG-TS segments in RAM (/dev/shm, so the SD
@@ -10,30 +11,38 @@ card is not worn by constant writing). On a press the segments around it are
 joined and cut into an MP4. Segments start at the camera's key frames (every
 2 s on the VIGI), so a clip can start up to one key frame earlier than asked.
 
+Sound: the doorbell's own microphone (door_audio.py), lined up with the picture
+by matching it against the camera's microphone; the camera's sound when no
+doorbell audio arrived (older doorbell firmware, doorbell offline). Settings >
+Camera can switch sound recording off.
+
 Without a running buffer (camera offline, just started) the clip is recorded
 straight from the camera instead, from the next key frame on. Rings are listed
 even when nothing could be recorded. Old clips go after KEEP_DAYS, or sooner
 when they take more than MAX_GB."""
 import json, os, shutil, signal, subprocess, threading, time
+import numpy as np
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 DIR = Path(__file__).resolve().parent / "recordings"
 BUF = Path("/dev/shm/doorbell_buffer")
-CLIP_S = 5  # default length after the press
-CLIP_CHOICES = (5, 10, 15, 30, 60)
+CLIP_S = 5  # default length after the press; any whole number of seconds up to the ring's own length
+RING_S = 30  # the doorbell's ring length until it reports its own (Settings > Outdoor unit)
 PRE_S = 3   # before the press, from the buffer
 LAG_S = 0.5  # the camera's picture reaches the Pi about this much behind real time
 SEGMENTS = 30  # kept in RAM: ~1 minute at the camera's 2 s key frame interval
 KEEP_DAYS = 30
 MAX_GB = 10
+MARGIN_S = 1.5  # doorbell audio looked at around a clip, for lining it up with the picture
+AUDIO = ["-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "48k"]  # the camera's G.711: AAC, playable everywhere
 
 
 class Buffer:
     """The last minute of the camera as MPEG-TS segments in RAM, kept by one ffmpeg."""
 
-    def __init__(self, url_fn):
-        self.url_fn = url_fn; self.proc = None; self.running = True
+    def __init__(self, url_fn, audio_fn=lambda: True):
+        self.url_fn = url_fn; self.audio_fn = audio_fn; self.proc = None; self.running = True
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
@@ -43,7 +52,8 @@ class Buffer:
                 time.sleep(10); continue
             shutil.rmtree(BUF, ignore_errors=True); BUF.mkdir(parents=True, exist_ok=True)
             cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp", "-i", url,
-                   "-map", "0:v:0", "-c", "copy", "-f", "segment", "-segment_time", "1", "-segment_wrap", str(SEGMENTS),
+                   "-map", "0:v:0", *(["-map", "0:a:0?", *AUDIO] if self.audio_fn() else []), "-c:v", "copy",
+                   "-f", "segment", "-segment_time", "1", "-segment_wrap", str(SEGMENTS),
                    "-segment_list", str(BUF / "list.csv"), "-segment_list_type", "csv",
                    "-segment_list_size", str(SEGMENTS - 2), "-segment_format", "mpegts", str(BUF / "seg%02d.ts")]
             self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -100,7 +110,7 @@ class Buffer:
         start = parts[0][1]  # a segment begins on a key frame
         try:
             r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(joined),
-                                "-t", f"{s1 - start:.2f}", "-c", "copy", "-movflags", "+faststart", str(out)],
+                                "-t", f"{s1 - start:.2f}", "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", str(out)],
                                capture_output=True, text=True, timeout=30)
             ok = r.returncode == 0 and out.exists() and out.stat().st_size > 10_000
             return max(0.0, s0 - start) if ok else None
@@ -111,12 +121,12 @@ class Buffer:
 class Recorder(QObject):
     saved = Signal(dict)  # a new entry: {"time", "kind", "video", "thumb", "note", "seconds", "pre"}
 
-    def __init__(self, url_fn):
-        super().__init__(); self.lock = threading.Lock(); self.url_fn = url_fn
+    def __init__(self, url_fn, audio_fn=lambda: True, door=None):
+        super().__init__(); self.lock = threading.Lock(); self.url_fn = url_fn; self.audio_fn = audio_fn; self.door = door
         DIR.mkdir(exist_ok=True); self.index = DIR / "index.json"
         try: self.entries = json.loads(self.index.read_text(encoding="utf-8"))
         except (OSError, ValueError): self.entries = []
-        self.buffer = Buffer(url_fn)
+        self.buffer = Buffer(url_fn, audio_fn)
         threading.Thread(target=self.prune, daemon=True).start()
 
     def record(self, kind="ring", seconds=CLIP_S):
@@ -135,6 +145,9 @@ class Recorder(QObject):
             entry["note"] = "ffmpeg missing"
         elif self.buffer.healthy() and (extra := self.buffer.cut(t - PRE_S, t + seconds, video)) is not None:
             entry["pre"] = round(PRE_S + extra, 1); entry["seconds"] = round(entry["pre"] + seconds)
+            if self.audio_fn() and self.door:  # the clip shows Pi times t - PRE_S - extra onwards
+                try: entry["audio"] = self._door_audio(video, t - PRE_S - extra, PRE_S + extra + seconds)
+                except Exception as e: print("Doorbell audio not added:", e, flush=True)
         else:
             self._direct(url, seconds, video, entry)
         if video.exists() and video.stat().st_size > 10_000:
@@ -147,10 +160,39 @@ class Recorder(QObject):
         self.saved.emit(entry)
         self.prune()
 
+    def _door_audio(self, video, start, length):
+        """Puts the doorbell's microphone into `video` (which shows Pi times start .. start + length),
+        lined up with the camera's own sound. Returns what the clip's sound is."""
+        wait = start + length + MARGIN_S + 0.5 - time.time()  # the live packets up to the end are in
+        if wait > 0: time.sleep(wait)
+        from door_audio import PORT, RATE, find_lag
+        door, covered = self.door.pcm(start - MARGIN_S, start + length + MARGIN_S)
+        if covered < 0.2:
+            print(f"Doorbell audio not added: only {covered:.0%} arrived (firmware, or UDP {PORT} blocked on the Pi?)", flush=True)
+            return "camera"
+        r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(video), "-vn", "-f", "s16le", "-ar", "8000", "-ac", "1", "-"],
+                           capture_output=True, timeout=30)
+        cam = np.frombuffer(r.stdout, np.int16) if r.returncode == 0 else np.zeros(0, np.int16)
+        lag, _ = find_lag(door, RATE, cam, 8000, MARGIN_S); measured = lag is not None
+        if measured: self.door.remember(lag)
+        else: lag = self.door.offset()  # too little sound to measure: as usual
+        lag = max(-MARGIN_S, min(MARGIN_S, lag))
+        i0 = int(round((MARGIN_S - lag) * RATE)); pcm = door[i0:i0 + int(length * RATE)]
+        tmp = video.with_suffix(".tmp.mp4")
+        r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(video), "-f", "s16le", "-ar", str(RATE), "-ac", "1", "-i", "-",
+                            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "64k", "-shortest",
+                            "-movflags", "+faststart", str(tmp)], input=pcm.tobytes(), capture_output=True, timeout=60)
+        if r.returncode != 0 or not tmp.exists():
+            tmp.unlink(missing_ok=True); print("Doorbell audio mux failed:", r.stderr[-200:], flush=True); return "camera"
+        tmp.replace(video)
+        print(f"Doorbell audio added: {covered:.0%} covered, shift {lag * 1000:+.0f} ms ({'measured' if measured else 'usual'})", flush=True)
+        return "doorbell"
+
     def _direct(self, url, seconds, video, entry):
         """No buffer: record from the camera's next key frame on."""
         cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-rtsp_transport", "tcp", "-i", url,
-               "-t", str(seconds), "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", str(video)]
+               "-t", str(seconds), "-map", "0:v:0", *(["-map", "0:a:0?", *AUDIO] if self.audio_fn() else []), "-c:v", "copy",
+               "-movflags", "+faststart", str(video)]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 20)
             if r.returncode == 0 and video.exists(): return

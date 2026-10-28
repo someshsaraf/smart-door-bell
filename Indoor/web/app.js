@@ -123,7 +123,7 @@ function renderState() {
     $("cd-arc").style.strokeDashoffset = String(276.5 * (1 - left / total));
     if (!wasRinging) alertRing();
   } else if (wasRinging) {
-    $("ring-live").removeAttribute("src");
+    $("ring-live").removeAttribute("src"); hearDoor();
   }
   wasRinging = !!s.ringing;
 }
@@ -139,8 +139,12 @@ function alertRing() {
   } catch (e) {}
   stopWatching();  // one camera stream at a time
   if ((P.state || {}).camera) $("ring-live").src = "/api/live.mjpg?t=" + Date.now();
+  hearDoor();
 }
-document.addEventListener("click", () => { if (audio && audio.state === "suspended") audio.resume(); });
+document.addEventListener("click", () => {
+  if (audio && audio.state === "suspended") audio.resume();
+  if (earBlocked) { earBlocked = false; hearDoor(); }  // the tap browsers wait for before playing sound
+});
 $("ring-stop").onclick = () => act("stop");
 $("ring-mute").onclick = () => act("mute", { minutes: 60 });
 document.querySelectorAll("[data-mute]").forEach((b) => b.onclick = () => act("mute", { minutes: +b.dataset.mute }));
@@ -251,16 +255,46 @@ setInterval(() => { if (!document.hidden && page === "home" && view === "photos"
 function watch() {
   $("live").src = "/api/live.mjpg?t=" + Date.now();
   $("live-placeholder").classList.add("hidden"); $("live-close").classList.remove("hidden");
+  hearDoor();
 }
 function stopWatching() {
   if (!$("live").getAttribute("src")) return;
   $("live").removeAttribute("src");
   $("live-placeholder").classList.remove("hidden"); $("live-close").classList.add("hidden");
+  hearDoor();
 }
+// The door's sound plays whenever its picture does. The Pi sends it as far behind real time as the
+// picture; if this player falls further behind, it plays a little faster until it is back.
+// Browsers only start sound after a tap on the page: until then "Tap for sound" shows, and any tap starts it.
+let ear = null, earBlocked = false;
+function hearDoor() {
+  const want = !document.hidden && !!($("live").getAttribute("src") || $("ring-live").getAttribute("src"));
+  if (want && !ear) {
+    ear = new Audio("/api/live_audio.mp3?t=" + Date.now()); earBlocked = false;
+    ear.onerror = () => { dropEar(); setTimeout(hearDoor, 3000); };  // the stream broke: start it again
+    ear.play().catch(() => { dropEar(); earBlocked = true; showSoundHint(); });
+  } else if (!want && ear) dropEar();
+  if (!want) earBlocked = false;
+  showSoundHint();
+}
+function dropEar() {
+  if (!ear) return;
+  ear.onerror = null; ear.pause(); ear.removeAttribute("src"); ear.load(); ear = null;
+}
+function showSoundHint() {
+  $("door-sound").classList.toggle("hidden", !(earBlocked && $("live").getAttribute("src")));
+  $("ring-sound").classList.toggle("hidden", !(earBlocked && $("ring-live").getAttribute("src")));
+}
+setInterval(() => {
+  if (!ear || !ear.buffered.length) return;
+  const behind = ear.buffered.end(ear.buffered.length - 1) - ear.currentTime;
+  ear.playbackRate = behind > 0.6 ? 1.15 : 1;
+}, 1000);
 $("watch").onclick = watch; $("live-close").onclick = stopWatching;
 document.addEventListener("visibilitychange", () => {  // no camera stream in the background
   if (document.hidden) { stopWatching(); $("ring-live").removeAttribute("src"); }
   else if ((P.state || {}).ringing && (P.state || {}).camera) $("ring-live").src = "/api/live.mjpg?t=" + Date.now();
+  hearDoor();
 });
 
 // ---------- recordings ----------
@@ -379,9 +413,14 @@ async function alertsTest() {
 const SECTIONS = [["speaker", "Speaker"], ["tone", "Bell tone"], ["news", "News"], ["festivals", "Festivals"],
   ["phone", "Phone (ntfy)"], ["camera", "Camera"], ["web", "Web access & alerts"], ["outdoor", "Outdoor unit"]];
 const DEPENDS = { speaker: ["speaker", "settings"], tone: ["settings"], news: ["settings"], festivals: ["settings", "state"],
-  phone: ["settings"], camera: ["camera", "settings"], web: ["settings"], outdoor: ["outdoor", "settings"] };
+  phone: ["settings"], camera: ["camera", "settings", "outdoor"], web: ["settings"], outdoor: ["outdoor", "settings"] };
 let section = "speaker", camDirty = false, odTab = "look", pickedMac = null, pickedNet = null, previewAudio = null;
 const vals = () => ((P.settings || {}).values || {});
+// [seconds recorded after a press, the most allowed: the doorbell's ring length]
+function recLength() {
+  const top = Math.max(1, ((P.outdoor || {}).state || {}).ring_seconds || P.settings.record.ring_default);
+  return [Math.min(vals().record_seconds, top), top];
+}
 function openSection(key, open) {
   section = SECTIONS.some((s) => s[0] === key) ? key : section;
   $("set-nav").innerHTML = SECTIONS.map(([k, t]) => `<a href="#settings/${k}" class="${k === section ? "on" : ""}">${t}</a>`).join("");
@@ -461,11 +500,13 @@ const RENDER = {
         For alerts without an extra app, see Web access & alerts.</p>
       <h3 class="section">TOPIC TO SUBSCRIBE TO</h3><p class="qr-url">${esc(n.topic)}</p><p class="muted">Server: ${esc(n.server)} · ${esc(n.encryption)}</p>
       ${choices("NOTIFY WHEN THE BELL RINGS", "notify", [[true, "On"], [false, "Off"]])}
+      ${choices("ALERT WHEN THE DOORBELL IS OFFLINE (no power, no Wi-Fi) FOR", "offline_alert_min", [[0, "Never"], [5, "5 min"], [15, "15 min"], [60, "1 hour"]])}
+      <p class="muted" style="margin-top:8px">Sent here and to the devices with ring alerts on (Web access & alerts), and again when it is back.</p>
       <div class="row" style="margin-top:14px"><button data-act="notify_test">Send a test notification</button>
         <button data-act="notify_topic" data-confirm="A new topic stops alerts on every phone subscribed to the old one. Continue?">New topic</button></div>`;
   },
   camera() {
-    const c = P.camera || {}, rs = vals().record_seconds;
+    const c = P.camera || {};
     const field = (k, label, v, type = "text", ph = "") => `<label class="field"><span>${label}</span><input id="cam-${k}" type="${type}" value="${esc(v)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
     return `<h2>Camera</h2><p class="muted">The front-door camera. Its login stays on the Pi; the password is never shown or sent to browsers.</p>
       <div class="row" style="align-items:flex-end">${field("ip", "IP ADDRESS", c.ip || "")}<button data-act="camera_find">Find</button></div>
@@ -476,8 +517,11 @@ const RENDER = {
       ${field("sub", "SMALL STREAM, for the live view here (VIGI: stream2)", c.sub || "stream2")}
       <div class="row" style="margin-top:14px"><button data-act="camera_test">Test connection</button><button class="primary" data-act="camera_save">Save</button></div>
       <p id="cam-msg" class="status-line"></p><img id="cam-snap" class="snap hidden" alt="">
-      <h3 class="section">RECORDING WHEN THE BELL RINGS</h3>
-      <div class="chips">${P.settings.record_choices.map((s) => chip(rs === s, s + " s", `data-set="record_seconds" data-v="${s}"`)).join("")}</div>`;
+      <h3 class="section">RECORDING AFTER THE PRESS: PICTURE AND SOUND</h3>
+      <div class="row wrap"><span class="step">${[-5, -1].map((d) => `<button data-rec="${d}">−${d === -5 ? 5 : ""}</button>`).join("")}
+        <b>${recLength()[0]} s</b>${[1, 5].map((d) => `<button data-rec="${d}">+${d === 5 ? 5 : ""}</button>`).join("")}</span>
+        <span class="muted">1 – ${recLength()[1]} s (the ring's length), plus ${P.settings.record.pre} s before the press</span></div>
+      ${choices("SOUND IN RECORDINGS (the doorbell's microphone)", "record_audio", [[true, "On"], [false, "Off: picture only"]])}`;
   },
   web() {
     const w = P.settings.web;
@@ -557,7 +601,7 @@ async function pushButtons() {
     : info.state === "insecure" && w.secure_url ? `<a class="button primary" href="${esc(w.secure_url)}">Open the secure address</a>` : "";
 }
 $("set-body").addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-set],[data-multi],[data-act],[data-od],[data-preview],[data-mac],[data-net],[data-odtab],[data-step],[data-push]");
+  const b = e.target.closest("[data-set],[data-multi],[data-act],[data-od],[data-preview],[data-mac],[data-net],[data-odtab],[data-step],[data-rec],[data-push]");
   if (!b) return;
   const d = b.dataset;
   if (d.set) return act("set", { key: d.set, value: JSON.parse(d.v) });
@@ -569,6 +613,10 @@ $("set-body").addEventListener("click", async (e) => {
   if (d.odtab) { odTab = d.odtab; return renderSection(); }
   if (d.mac) { pickedMac = d.mac; return renderSection(); }
   if (d.net) { pickedNet = +d.net; return renderSection(); }
+  if (d.rec) {
+    const [secs, top] = recLength();
+    return act("set", { key: "record_seconds", value: Math.max(1, Math.min(top, secs + +d.rec)) });
+  }
   if (d.step) {
     const st = (P.outdoor || {}).state || {}, n = { enabled: true, from: 23, to: 6, ...(st.screen_off || {}) };
     return act("outdoor", { change: { screen_off: { [d.step]: (n[d.step] + +d.d + 24) % 24 } } });

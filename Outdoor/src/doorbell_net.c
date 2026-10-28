@@ -890,14 +890,28 @@ static void handle_festival(const char *json)
     cJSON_Delete(j);
 }
 
-/* {"command":"start","host":"192.168.1.102","port":5004} or {"command":"end"} */
+/* {"command":"start","host":"192.168.1.102","port":5004} or {"command":"end"}: an intercom call;
+ * {"command":"listen","host":"192.168.1.102","port":5006,"seconds":20} or {"command":"listen_end"}:
+ * the microphone only, one way (doorbell_listen.h) */
 static void handle_talk(const char *json)
 {
     cJSON *j = cJSON_Parse(json);
     if (!j)
         return;
     const cJSON *cmd = cJSON_GetObjectItem(j, "command"), *host = cJSON_GetObjectItem(j, "host");
-    const cJSON *port = cJSON_GetObjectItem(j, "port");
+    const cJSON *port = cJSON_GetObjectItem(j, "port"), *secs = cJSON_GetObjectItem(j, "seconds");
+    bool listen = cJSON_IsString(cmd) && strcmp(cmd->valuestring, "listen") == 0;
+    if (listen || (cJSON_IsString(cmd) && strcmp(cmd->valuestring, "listen_end") == 0)) {
+        tal_mutex_lock(lock);
+        st.listen_on = listen;
+        snprintf(st.listen_host, sizeof(st.listen_host), "%s", cJSON_IsString(host) ? host->valuestring : "");
+        st.listen_port = cJSON_IsNumber(port) ? (uint16_t)port->valueint : 0;
+        st.listen_secs = cJSON_IsNumber(secs) && secs->valueint > 0 ? (uint32_t)secs->valueint : 0;
+        st.listen_seq++;
+        tal_mutex_unlock(lock);
+        cJSON_Delete(j);
+        return;
+    }
     bool start = cJSON_IsString(cmd) && strcmp(cmd->valuestring, "start") == 0;
     if (start || (cJSON_IsString(cmd) && strcmp(cmd->valuestring, "end") == 0)) {
         tal_mutex_lock(lock);

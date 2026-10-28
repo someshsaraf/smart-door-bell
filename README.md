@@ -120,19 +120,32 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 - 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
 - 🚪 **Visitor alert** — the door camera full screen like a video call: *VISITOR AT THE DOOR* with the ring time, a REC
   badge while it records, a countdown ring and a big **STOP** (which also returns the doorbell to its main screen);
-  the **Front door** tile opens the same view live, any time
+  the **Front door** tile opens the same view live, any time. The doorbell's microphone plays with the picture, delayed
+  to match it, with no button to press: while ringing it mixes with the chime. Browsers do the same (a phone that has
+  not been tapped yet shows *Tap for sound* first, as browsers require)
 - 🎙️ **Voice commands, all on the Pi** — tap ◉ (bottom left) and say *"Stop the bell"*, *"Mute the bell for an hour"*,
   *"Show me all events"*, *"Show events from yesterday / last Monday / 20 October / this week"*, *"Play the last
   recording"*, *"Who is at the front door"*, *"Go home"*. Speech recognition is Whisper on the Pi's CPU (~2 s per
   command, nothing sent to the cloud). Needs a USB microphone; the Bluetooth speaker's microphone is never used
 - 📷 **Camera setup on the screen** — finds the camera on the network, takes its login, tests it with a snapshot
-- 🎬 **Ring recordings** — every press saves the camera from **3–5 s before the press** to 5 s after it (5–60 s under
-  Settings → Camera) onto the Pi's SD card, full quality without re-encoding. The last minute of the camera is kept
-  in RAM all the time (not on the SD card, which constant writing would wear) and the clip is cut from it. The **Events** tile lists each ring with a thumbnail; tap to play.
+- 🎬 **Ring recordings** — every press saves the camera from **3–5 s before the press** to 5 s after it (picture and
+  sound; 1 s up to the ring's length under Settings → Camera) onto the Pi's SD card, full quality without re-encoding. The last minute of the camera is kept
+  in RAM all the time (not on the SD card, which constant writing would wear) and the clip is cut from it.
+  **With sound from the doorbell's own microphone**: the doorbell always keeps its last 8 s of sound and on a press
+  sends it from 3 s before the press, so the sound starts as early as the picture.
+  - **In sync:** every 20 ms packet carries its sample number, and the Pi places it on its own clock. Then it matches
+    that sound against the camera's microphone, which is in step with the picture, to remove the camera's delay.
+  - **Fallback:** the camera's sound is kept when no doorbell sound arrives.
+  - **Off switch:** Settings → Camera can switch sound recording off.
+
+  The **Events** tile lists each ring with a thumbnail; tap to play.
   Delete one, several (Select) or all, each confirmed by a second tap. Kept 30 days, at most 10 GB
 - 🔊 **16 ring tones on a Bluetooth speaker** — chimes, Bollywood-style (shehnai, sitar, dhol, santoor), festive (Jingle Bells, Auld Lang Syne) and funny ones (boing, kazoo, rubber duck…), all original; add your own `.wav`/`.mp3` under `Indoor/assets/tones/mine/`. Loops for the whole ring until the timer ends or STOP is pressed
 - 🎙️ **Two-way talk (trial, off by default: Settings → Speaker)** — **Talk** on the visitor screen, or any time from the **Front door** tile (live camera + intercom). The Bluetooth speaker switches to its hands-free microphone for the call and back to full-quality playback afterwards
 - 📱 **Phone notifications** — a push alert on every ring through the free [ntfy](https://ntfy.sh) app, no account needed: subscribe to the topic shown under **Settings → Phone** (own server: `sudo bash Indoor/tools/setup_ntfy.sh` installs ntfy on the Pi with logins, then set `"notify": {"server": "...", "token": "tk_..."}` in `config.json`)
+- 🩺 **Doorbell offline alert** — when the doorbell loses power or Wi-Fi, the broker reports it ~45 s later. Once it
+  has been gone for 15 min (5 min, 1 hour or never, under Settings → Phone), the phones get *Doorbell offline*, and
+  *Doorbell back online* with how long it was down. This goes through ntfy and to the browsers with ring alerts on
 - 💻 **The whole dashboard on a phone or laptop** — the Pi serves it as a web app on port 8080, made for phones as
   well as large screens:
   - the news with its market band and breaking ticker, and the photos;
