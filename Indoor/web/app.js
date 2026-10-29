@@ -74,6 +74,7 @@ function changed(keys) {
   if (k.has("log")) $("log").textContent = (P.log || []).join("\n") || "No recent events";
   if (k.has("events")) renderEvents();
   if (k.has("notice") && P.notice && Date.now() / 1000 - P.notice.t < 10) toast(P.notice.text);
+  if (k.has("settings")) applyLook();
   if (["settings", "speaker", "camera", "outdoor", "state"].some((x) => k.has(x))) refreshSection(k);
 }
 
@@ -410,11 +411,11 @@ async function alertsTest() {
 }
 
 // ---------- settings ----------
-const SECTIONS = [["speaker", "Speaker"], ["tone", "Bell tone"], ["news", "News"], ["festivals", "Festivals"],
+const SECTIONS = [["look", "Look"], ["speaker", "Speaker"], ["tone", "Bell tone"], ["news", "News"], ["festivals", "Festivals"],
   ["phone", "Phone (ntfy)"], ["camera", "Camera"], ["web", "Web access & alerts"], ["outdoor", "Outdoor unit"]];
-const DEPENDS = { speaker: ["speaker", "settings"], tone: ["settings"], news: ["settings"], festivals: ["settings", "state"],
+const DEPENDS = { look: ["settings"], speaker: ["speaker", "settings"], tone: ["settings"], news: ["settings"], festivals: ["settings", "state"],
   phone: ["settings"], camera: ["camera", "settings", "outdoor"], web: ["settings"], outdoor: ["outdoor", "settings"] };
-let section = "speaker", camDirty = false, odTab = "look", pickedMac = null, pickedNet = null, previewAudio = null;
+let section = "look", camDirty = false, odTab = "look", pickedMac = null, pickedNet = null, previewAudio = null;
 const vals = () => ((P.settings || {}).values || {});
 // [seconds recorded after a press, the most allowed: the doorbell's ring length]
 function recLength() {
@@ -451,7 +452,22 @@ function renderSection() {
   body.innerHTML = '<a class="button back-link" href="#settings">‹ Settings</a>' + (RENDER[section] || (() => ""))();
   afterRender();
 }
+// the page takes the colours of the look chosen for the wall (Settings > Look)
+function applyLook() {
+  const l = ((P.settings || {}).looks || []).find((x) => x.key === vals().look); if (!l) return;
+  const c = l.colors, root = document.documentElement.style;
+  for (const [v, k] of [["--bg", "bg"], ["--panel", "panel"], ["--panel2", "button"], ["--line", "line"], ["--text", "text"], ["--muted", "muted"], ["--accent", "accent"]])
+    root.setProperty(v, c[k]);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", c.bg);
+}
 const RENDER = {
+  look() {
+    const cur = vals().look;
+    return `<h2>Look</h2><p class="muted">The wall's home screen layout, and the colours of every page. This page takes the colours too.</p>
+      <div class="looks">${P.settings.looks.map((l) => `<button class="look-card${l.key === cur ? " on" : ""}" data-set="look" data-v='${jattr(l.key)}'>
+        <img class="look-pic" src="/looks/${esc(l.key)}.png" alt="">
+        <b>${esc(l.name)}</b><small>${esc(l.about)}</small></button>`).join("")}</div>`;
+  },
   speaker() {
     const sp = P.speaker || {};
     return `<h2>Bluetooth speaker</h2><p class="muted">Sound plays on: ${esc(sp.output || "…")}</p>

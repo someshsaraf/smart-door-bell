@@ -9,10 +9,10 @@ os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
 # chain (Bluetooth speaker included) at that pace and drops out audibly under any load.
 os.environ.setdefault("PIPEWIRE_LATENCY", "2048/48000")
 os.environ.setdefault("PULSE_LATENCY_MSEC", "60")
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QVariantAnimation, QEasingCurve, QRectF, QPointF
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QLinearGradient, QRadialGradient
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget,
-                               QSizePolicy, QGraphicsDropShadowEffect)
+                               QSizePolicy)
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
@@ -26,13 +26,13 @@ try:
 except ImportError:
     cv2 = None
 
-import datetime as dt, math, random
-import festive_art
+import datetime as dt
+import looks
 from string import Template
 from bluetooth import Bluetooth
 from festivals import current as current_festival, greeting as festival_greeting
 from news import News, ago
-from news_ui import NewsPainter, TICKER_H, BOTTOM_H, FLASH_MIN
+from home_qml import QuickHome
 from ring_ui import RingPage
 from web import Web
 from webapp import WebApp
@@ -65,7 +65,7 @@ T_FESTIVAL = topic("topic_festival", "home/doorbell/festival")  # retained, read
 T_TALK = topic("topic_talk", "home/doorbell/talk")  # intercom call start / end, to the doorbell
 # Festival running now with festival tones on (key, e.g. "diwali"), else None; set by Window.check_festival.
 FESTIVAL = {"key": None}
-FESTIVAL_ART = ROOT / "assets" / "festivals"  # optional own wallpapers: assets/festivals/<key>/*.jpg
+BOTTOM_H = 120  # the voice button and its bubble stay above the foot of the pages (market band, ticker)
 FESTIVAL_TONES = {"diwali": "shehnai_swagat.wav", "christmas": "jingle_bells.wav", "new_year": "auld_lang_syne.wav"}
 class Signals(QObject):
     message = Signal(str, str)
@@ -159,296 +159,21 @@ def label(text, obj=None):
     if obj: w.setObjectName(obj)
     return w
 
-class Scenic(QWidget):
-    """Full-screen backdrop of the dashboard, in one of two modes:
-    photos: every interval the next picture slides in from the right;
-    news:   a TV-news style screen (news_ui.py): the big story slides on every
-            interval, a ticker of the newest headlines scrolls along the bottom.
-    A swipe (or a tap on the news arrows) goes forward or back by hand.
-    Pictures fill the frame (cropped, never stretched) and are scaled once per size."""
-    TICKER_PX_S = 95  # ticker speed
-    def __init__(self, folder, photo_s, news_s):
-        super().__init__()
-        self.paths = self.base_paths = pictures(folder)
-        try: self.credits = json.loads((folder / "credits.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError): self.credits = {}
-        self.idx = 0; self.pos = 0.0; self.cache = {}
-        self.mode = "photos"; self.news = []; self.news_idx = 0; self.news_note = "Loading news…"
-        self.intervals = {"photos": int(photo_s * 1000), "news": int(news_s * 1000)}
-        self.anim = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=1100, easingCurve=QEasingCurve.InOutCubic)
-        self.anim.valueChanged.connect(self._step); self.anim.finished.connect(self._done)
-        self.timer = QTimer(self); self.timer.timeout.connect(self.next)
-        self.dir = 1; self.press = None  # slide direction (1 forward, -1 back); where a touch began
-        self.painter = NewsPainter(); self.breaking = []; self.tick_x = 0.0; self.tick_t = time.monotonic()
-        self.seen = None; self.flashes = []; self.flash = None; self.flash_t = 0.0  # big BREAKING NEWS banners
-        self.market = None; self.market_note = ""  # the market band's data, or why there is none
-        self.ticker = QTimer(self); self.ticker.timeout.connect(self._tick)
-    def set_festival(self, key):
-        """Festival wallpapers: pictures in assets/festivals/<key>/ if any, else
-        one painted in code ("@key"). None returns to the normal pictures."""
-        self.paths = (pictures(FESTIVAL_ART / key) or [f"@{key}"]) if key else self.base_paths
-        self.idx = 0; self.pos = 0.0; self.anim.stop(); self.cache.clear(); self.update()
-    def set_mode(self, mode):
-        self.mode = mode; self.anim.stop(); self.pos = 0.0
-        self.timer.start(self.intervals[mode]); self.update()
-        if mode == "news": self.tick_t = time.monotonic(); self.ticker.start(33)
-        else: self.ticker.stop()
-    def set_market(self, data):
-        self.market = data
-        if self.mode == "news": self.update(0, self.height() - BOTTOM_H, self.width(), BOTTOM_H)
-    def set_market_note(self, note):
-        self.market_note = note
-        if not self.market and self.mode == "news": self.update()
-    def set_breaking(self, items):
-        """New ticker headlines; ones fresher than FLASH_MIN that were not there before are flashed big
-        (on the first list after start-up only the newest, so a restart does not replay them all)."""
-        fresh = [i for i in items if i.get("time") and time.time() - i["time"] < FLASH_MIN * 60]
-        new = [i for i in fresh if self.seen is not None and i["title"] not in self.seen] if self.seen is not None else fresh[:1]
-        self.seen = {i["title"] for i in items} | (self.seen or set())
-        self.flashes += sorted(new, key=lambda i: i["time"])
-        self.breaking = items; self.update()
-    FLASH_S = 12
-    def _tick(self):
-        now = time.monotonic(); self.tick_x += self.TICKER_PX_S * (now - self.tick_t); self.tick_t = now
-        if self.flash and now - self.flash_t > self.FLASH_S: self.flash = None; self.update()
-        if not self.flash and self.flashes and self.mode == "news":
-            self.flash = self.flashes.pop(0); self.flash_t = now
-        if not self.isVisible(): return
-        if self.flash: self.update()  # the banner fades and pulses
-        else: self.update(0, self.height() - TICKER_H, self.width(), TICKER_H)  # only the ticker
-    def flash_alpha(self):
-        age = time.monotonic() - self.flash_t
-        return max(0.0, min(1.0, age / 0.4, (self.FLASH_S - age) / 0.6))
-    def go(self, d):
-        """One step forward (1) or back (-1), by hand: the automatic turn waits a full interval again."""
-        if len(self.news if self.mode == "news" else self.paths) < 2 or self.anim.state() == QVariantAnimation.Running: return
-        self.dir = d; self.anim.start(); self.timer.start(self.intervals[self.mode])
-    def mousePressEvent(self, e):
-        self.press = e.position()
-    def mouseReleaseEvent(self, e):
-        if self.press is None: return
-        dx = e.position().x() - self.press.x(); start = self.press; self.press = None
-        if abs(dx) > 80: self.go(-1 if dx > 0 else 1)  # swipe left: next; swipe right: previous
-        elif self.mode == "news":
-            d = self.painter.arrow_at(start.x(), start.y(), self.width())
-            if d: self.go(d)
-    def set_news(self, items):
-        self.news = items; self.news_idx = 0 if self.news_idx >= len(items) else self.news_idx; self.update()
-    def set_news_note(self, text):
-        self.news_note = text
-        if not self.news: self.update()
-    def next(self):
-        if len(self.news if self.mode == "news" else self.paths) < 2: return
-        if self.anim.state() != QVariantAnimation.Running: self.dir = 1; self.anim.start()
-    def _step(self, v): self.pos = v; self.update()
-    def _done(self):
-        if self.mode == "news": self.news_idx = (self.news_idx + self.dir) % len(self.news)
-        else: self.idx = (self.idx + self.dir) % len(self.paths)
-        self.pos = 0.0; self.update()
-    def _pixmap(self, i):
-        key = (i, self.width(), self.height())
-        if key not in self.cache:
-            if len(self.cache) > 4: self.cache.clear()  # only the current and next are ever drawn
-            src = self.paths[i]
-            if isinstance(src, str): self.cache[key] = festive_art.paint(src[1:], self.width(), self.height()); return self.cache[key]
-            pm = QPixmap(str(src)).scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            x, y = (pm.width() - self.width()) // 2, (pm.height() - self.height()) // 2
-            self.cache[key] = pm.copy(x, y, self.width(), self.height())
-        return self.cache[key]
-    def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
-        w, h = self.width(), self.height(); r = QRectF(self.rect())
-        if not self.paths:
-            p.fillRect(r, QColor("#1e4560")); p.setPen(QColor("#dce8f7"))
-            p.drawText(r, Qt.AlignCenter, "Add landscape pictures to assets/scenic/"); return
-        shift = int(self.pos * w); n = len(self.paths)
-        if self.mode == "news": self._paint_news(p, w, h, shift); return
-        p.drawPixmap(-shift * self.dir, 0, self._pixmap(self.idx))
-        if shift: p.drawPixmap((w - shift) * self.dir, 0, self._pixmap((self.idx + self.dir) % n))
-        # Soft shades so the clock (top) and dots/credit/events (bottom) read on any picture.
-        for y0, y1, a0, a1 in ((0, h * 0.45, 160, 0), (h * 0.65, h, 0, 150)):
-            g = QLinearGradient(0, y0, 0, y1); g.setColorAt(0, QColor(0, 0, 0, a0)); g.setColorAt(1, QColor(0, 0, 0, a1))
-            p.fillRect(QRectF(0, y0, w, y1 - y0), g)
-        # page dots, bottom centre; the active one moves halfway through a slide
-        active = self.idx if self.pos < 0.5 else (self.idx + self.dir) % n
-        p.setPen(Qt.NoPen)
-        for i in range(n if n > 1 else 0):
-            p.setBrush(QColor(255, 255, 255, 240 if i == active else 110)); rad = 5 if i == active else 3.5
-            p.drawEllipse(QPointF(w / 2 + (i - (n - 1) / 2) * 18, h - 26), rad, rad)
-        name = self.credits.get(getattr(self.paths[self.idx], "name", "")) if not shift else None
-        if name:
-            f = QFont(self.font()); f.setPixelSize(12); p.setFont(f); p.setPen(QColor(255, 255, 255, 190))
-            p.drawText(QRectF(28, h - 38, w / 2, 24), Qt.AlignLeft | Qt.AlignVCenter, f"Photo: {name} / Unsplash")
-    def _paint_news(self, p, w, h, shift):
-        n = len(self.news)
-        if not n:
-            p.fillRect(QRectF(0, 0, w, h), QColor("#070b14"))
-            f = QFont(self.font()); f.setPixelSize(26); p.setFont(f); p.setPen(QColor(255, 255, 255, 200))
-            p.drawText(QRectF(230, 260, w * 0.6, 160), Qt.TextWordWrap, self.news_note)
-        else:
-            cur = self.news[self.news_idx % n]; other = self.news[(self.news_idx + self.dir) % n]
-            p.drawPixmap(0, 0, self.painter.backdrop(cur, w, h))
-            if shift:  # the next story's backdrop fades in while the story slides
-                p.setOpacity(self.pos); p.drawPixmap(0, 0, self.painter.backdrop(other, w, h)); p.setOpacity(1.0)
-            p.save(); p.setClipRect(QRectF(150, 0, w - 150, h - BOTTOM_H))
-            self.painter.paint_story(p, cur, w, h, -shift * self.dir, self.font(), self.news_idx % n, n)
-            if shift: self.painter.paint_story(p, other, w, h, (w - shift) * self.dir, self.font(), (self.news_idx + self.dir) % n, n)
-            p.restore()
-            if n > 1: self.painter.paint_arrows(p, w, self.font())
-        if self.flash: self.painter.paint_flash(p, self.flash, w, self.font(), self.flash_alpha(), time.monotonic())
-        self.painter.paint_market(p, self.market, self.market_note, w, h, self.font())
-        self.painter.paint_ticker(p, self.breaking, w, h, self.tick_x, self.font(), time.monotonic())
-    def resizeEvent(self, e):
-        self.cache.clear(); super().resizeEvent(e)
-
-def shadow(w, blur=24):
-    """Soft drop shadow so text stays readable on bright photos."""
-    e = QGraphicsDropShadowEffect(w); e.setBlurRadius(blur); e.setOffset(0, 2); e.setColor(QColor(0, 0, 0, 180)); w.setGraphicsEffect(e)
-
-def tile(icon, text):
-    """Small square shortcut on the left rail: icon above a short caption."""
-    b = QPushButton(); b.setObjectName("tile"); b.setFixedSize(88, 84)
-    lay = QVBoxLayout(b); lay.setContentsMargins(4, 8, 4, 8); lay.setSpacing(2)
-    b.labels = []
-    for t, obj in ((icon, "tileIcon"), (text, "tileText")):
-        l = label(t, obj); l.setAlignment(Qt.AlignCenter); l.setAttribute(Qt.WA_TransparentForMouseEvents); lay.addWidget(l); b.labels.append(l)
-    return b
-
-def pictures(folder):
-    return sorted(p for p in folder.glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png")) if folder.is_dir() else []
-
-class FestiveOverlay(QWidget):
-    """Festival decoration over the dashboard: a greeting banner and light
-    particles (Diwali: golden sparks rising, Christmas: snow, New Year:
-    confetti). Transparent to touches; animates only while visible."""
-    LOOK = {  # particle count, colours, banner text colour
-        "diwali": (60, [(255, 200, 80), (255, 140, 40), (255, 90, 140)], "#ffc24a"),
-        "christmas": (110, [(255, 255, 255)], "#ff6b6b"),
-        "new_year": (80, [(255, 205, 60), (255, 70, 200), (60, 220, 255), (150, 255, 110), (255, 255, 255)], "#ffd54a"),
-    }
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents); self.setAttribute(Qt.WA_NoSystemBackground)
-        self.key = None; self.text = ""; self.parts = []
-        self.timer = QTimer(self); self.timer.timeout.connect(self.step); self.hide()
-    def set_festival(self, key, text):
-        self.key, self.text = key, text
-        if not key:
-            self.timer.stop(); self.hide(); return
-        count, colors, _ = self.LOOK[key]
-        self.parts = [self.spawn(colors, scatter=True) for _ in range(count)]
-        self.setGeometry(self.parentWidget().rect()); self.show(); self.raise_(); self.timer.start(40)
-    def spawn(self, colors, scatter=False):
-        w, h = max(1, self.width()), max(1, self.height())
-        p = {"x": random.uniform(0, w), "c": random.choice(colors), "ph": random.uniform(0, 6.3), "rot": random.uniform(0, 360)}
-        if self.key == "diwali":   # sparks drift up from the bottom
-            p.update(y=random.uniform(0, h) if scatter else h + 10, vy=-random.uniform(0.5, 1.5), r=random.uniform(1.5, 3.2))
-        elif self.key == "christmas":  # snow falls from the top
-            p.update(y=random.uniform(0, h) if scatter else -10, vy=random.uniform(0.6, 2.0), r=random.uniform(1.5, 4.5))
-        else:  # confetti
-            p.update(y=random.uniform(0, h) if scatter else -12, vy=random.uniform(1.2, 2.6), r=random.uniform(4, 7))
-        return p
-    def step(self):
-        if not self.isVisible(): return
-        colors = self.LOOK[self.key][1]; h = self.height()
-        for i, p in enumerate(self.parts):
-            p["ph"] += 0.05; p["y"] += p["vy"]; p["x"] += math.sin(p["ph"]) * 0.6; p["rot"] += 4
-            if p["y"] < -20 or p["y"] > h + 20: self.parts[i] = self.spawn(colors)
-        self.update()
-    def paintEvent(self, e):
-        if not self.key: return
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setPen(Qt.NoPen)
-        for q in self.parts:
-            r, g, b = q["c"]
-            if self.key == "diwali":  # soft glow and a bright, flickering core
-                a = int(120 + 100 * math.sin(q["ph"] * 3))
-                grad = QRadialGradient(QPointF(q["x"], q["y"]), q["r"] * 4)
-                grad.setColorAt(0, QColor(r, g, b, max(0, a))); grad.setColorAt(1, QColor(r, g, b, 0))
-                p.setBrush(grad); p.drawEllipse(QPointF(q["x"], q["y"]), q["r"] * 4, q["r"] * 4)
-                p.setBrush(QColor(255, 245, 210, 230)); p.drawEllipse(QPointF(q["x"], q["y"]), q["r"] * 0.7, q["r"] * 0.7)
-            elif self.key == "christmas":
-                p.setBrush(QColor(r, g, b, 190)); p.drawEllipse(QPointF(q["x"], q["y"]), q["r"], q["r"])
-            else:
-                p.save(); p.translate(q["x"], q["y"]); p.rotate(q["rot"]); p.setBrush(QColor(r, g, b, 220))
-                p.drawRect(QRectF(-q["r"] / 2, -q["r"], q["r"], q["r"] * 2)); p.restore()
-        # greeting banner, top right under the MQTT status (the big clock owns the top left)
-        f = QFont(self.font()); f.setPixelSize(30); f.setBold(True); p.setFont(f)
-        tw = p.fontMetrics().horizontalAdvance(self.text) + 60; box = QRectF(self.width() - tw - 36, 78, tw, 56)
-        p.setBrush(QColor(10, 16, 26, 160)); p.setPen(QColor(self.LOOK[self.key][2])); p.drawRoundedRect(box, 28, 28)
-        p.drawText(box, Qt.AlignCenter, self.text)
-
-class Dashboard(QFrame):
-    """Full-screen wallpaper with the clock, a slim shortcut rail and recent
-    events floating on top of it in translucent panels."""
-    open_settings = Signal()
-    open_door = Signal()
-    open_events = Signal()
-    view_changed = Signal(str)  # "news" or "photos"
-    logged = Signal(list)  # the recent events' lines, newest first
-    def __init__(self, view="news"):
-        super().__init__(); self.setObjectName("dashboard")
-        root = QVBoxLayout(self); root.setContentsMargins(0,0,0,0)
-        sc=CFG.get("scenic",{})
-        self.scenic=Scenic(ROOT/sc.get("folder","assets/scenic"), sc.get("interval_seconds",15),
-                           CFG.get("news",{}).get("interval_seconds",12)); root.addWidget(self.scenic)
-
-        over = QHBoxLayout(self.scenic); over.setContentsMargins(28,28,28,BOTTOM_H+16); over.setSpacing(28)
-        rail = QFrame(); rail.setObjectName("glass"); rl = QVBoxLayout(rail); rl.setContentsMargins(10,10,10,10); rl.setSpacing(10)
-        door = tile("⌂","Front door"); door.clicked.connect(self.open_door.emit); rl.addWidget(door)
-        # Switches between news and photos; it is labelled with the view it switches to.
-        self.switch = tile("", ""); self.switch.clicked.connect(lambda: self._set_view("news" if self.view == "photos" else "photos"))
-        rl.addWidget(self.switch)
-        events = tile("▶","Events"); events.clicked.connect(self.open_events.emit); rl.addWidget(events)
-        gear = tile("⚙","Settings"); gear.clicked.connect(self.open_settings.emit); rl.addWidget(gear)
-        over.addWidget(rail, 0, Qt.AlignVCenter)
-        self._set_view("photos" if view == "photos" else "news", notify=False)
-
-        main = QVBoxLayout(); main.setSpacing(0)
-        top = QHBoxLayout(); col = QVBoxLayout(); col.setSpacing(0)
-        self.clock = label("", "heroClock"); self.date = label("", "heroDate")
-        for l in (self.clock, self.date): shadow(l); col.addWidget(l)
-        top.addLayout(col); top.addStretch()
-        self.mqtt_status = label("○ MQTT starting…", "status"); top.addWidget(self.mqtt_status, 0, Qt.AlignTop)
-        main.addLayout(top); main.addStretch()
-        bottom = QHBoxLayout(); bottom.addStretch()
-        events = QFrame(); events.setObjectName("glass"); events.setFixedWidth(360)
-        el = QVBoxLayout(events); el.setContentsMargins(20,14,20,16); el.setSpacing(6)
-        el.addWidget(label("RECENT EVENTS","glassTitle"))
-        self.events=label("No recent events","eventText"); self.events.setWordWrap(True); el.addWidget(self.events)
-        bottom.addWidget(events, 0, Qt.AlignBottom); main.addLayout(bottom)
-        over.addLayout(main, 1)
-        self.festive = FestiveOverlay(self.scenic)  # on top of everything; hidden outside festivals
-    def resizeEvent(self, e):
-        super().resizeEvent(e); self.festive.setGeometry(self.scenic.rect())
-    def _set_view(self, mode, notify=True):
-        self.view = mode; self.scenic.set_mode(mode)
-        icon, text = ("☰", "News") if mode == "photos" else ("▣", "Photos")
-        self.switch.labels[0].setText(icon); self.switch.labels[1].setText(text)
-        if notify: self.view_changed.emit(mode)
-    def update_clock(self):
-        now=time.localtime(); self.date.setText(time.strftime("%A, %d %B",now)); self.clock.setText(time.strftime("%I:%M %p",now).lstrip("0"))
-    def set_status(self, ok, msg):
-        self.mqtt_status.setText(("● " if ok else "○ ")+msg); self.mqtt_status.setProperty("connected",ok)
-        self.mqtt_status.style().unpolish(self.mqtt_status); self.mqtt_status.style().polish(self.mqtt_status)
-    def add_event(self, msg):  # not "event": that would override QWidget.event()
-        old=self.events.text()
-        lines=[] if old=="No recent events" else old.splitlines()
-        self.events.setText("\n".join((["• "+time.strftime("%H:%M")+"  "+msg]+lines)[:4]))
-        self.logged.emit(self.events.text().splitlines())
-
 class Window(QWidget):
     def __init__(self):
         super().__init__(); self.setWindowTitle("Indoor Doorbell Dashboard"); self.setMinimumSize(800,450)
         self.active=False; self.until=0; self.event_id=None; self.camera=None
         self.audio=Audio(); self.bt=Bluetooth(); self.door_ip=None
         self.intercom=Intercom()
-        self.stack=QStackedWidget(); self.home=Dashboard(SETTINGS.get("home_view","news")); self.ring=RingPage(lambda: SETTINGS.get("intercom", False))
+        self.stack=QStackedWidget(); self.home=QuickHome(SETTINGS.get("home_view","news"), SETTINGS.get("look", looks.DEFAULT),
+                                                         ROOT/CFG.get("scenic",{}).get("folder","assets/scenic"),
+                                                         lambda: camera_cfg.url(which="sub") or camera_cfg.url()); self.ring=RingPage(lambda: SETTINGS.get("intercom", False))
         self.home.view_changed.connect(lambda v: (SETTINGS.__setitem__("home_view", v), save_settings()))
         self.news=News(SETTINGS, ROOT/"news_cache.json")
-        self.news.updated.connect(self.home.scenic.set_news); self.news.breaking.connect(self.home.scenic.set_breaking)
-        self.markets=Markets(); self.markets.updated.connect(self.home.scenic.set_market)
-        self.markets.status.connect(self.home.scenic.set_market_note); self.markets.start()
-        self.news.failed.connect(lambda why: self.home.scenic.set_news_note(f"News unavailable ({why}). Retrying every minute."))
+        self.news.updated.connect(self.home.set_news); self.news.breaking.connect(self.home.set_breaking)
+        self.markets=Markets(); self.markets.updated.connect(self.home.set_market)
+        self.markets.status.connect(self.home.set_market_note); self.markets.start()
+        self.news.failed.connect(lambda why: self.home.set_news_note(f"News unavailable ({why}). Retrying every minute."))
         self.news.start()
         self.notifier=Notifier(SETTINGS, CFG.get("notify",{}).get("server"), CFG.get("notify",{}).get("token"))
         self.settings=SettingsPage(self.bt, TONES, SETTINGS, save_settings, self.preview, self.send_outdoor, self.news.refresh,
@@ -463,8 +188,10 @@ class Window(QWidget):
         self.web=Web(recorder_mod.DIR, lambda: camera_cfg.url(which="sub") or camera_cfg.url(), self.door_audio)
         self.door_online=None
         self.events_page=EventsPage(self.recorder)
+        self.recorder.saved.connect(lambda _e: self.show_visits()); self.show_visits()
         self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
         self.settings.camera.on_audio=self.recorder.buffer.restart  # sound in recordings switched on or off
+        self.settings.look.on_look=self.apply_look
         self.events_page.back.connect(lambda: self.stack.setCurrentWidget(self.home))
         self.home.open_events.connect(lambda: (self.events_page.set_filter(None), self.stack.setCurrentWidget(self.events_page)))
         for page in (self.home, self.ring, self.settings, self.events_page): self.stack.addWidget(page)
@@ -475,7 +202,9 @@ class Window(QWidget):
         self.muted_until=0.0
         self.assistant=Assistant()
         self.mic=QPushButton("◉",self); self.mic.setObjectName("mic"); self.mic.setFixedSize(84,84); self.mic.clicked.connect(self.assistant.listen)
-        self.stack.currentChanged.connect(lambda _i: self.mic.setVisible(self.stack.currentWidget() is not self.settings))  # not over the settings menu
+        # not over the settings menu, nor the home screen (it has its own voice orb)
+        self.stack.currentChanged.connect(lambda _i: self.mic.setVisible(self.stack.currentWidget() not in (self.settings, self.home)))
+        self.mic.hide(); self.home.listen.connect(self.assistant.listen)
         self.bubble=QLabel("",self); self.bubble.setObjectName("bubble"); self.bubble.setAlignment(Qt.AlignCenter); self.bubble.hide()
         self.bubble_timer=QTimer(self); self.bubble_timer.setSingleShot(True); self.bubble_timer.timeout.connect(self.bubble.hide)
         self.assistant.state.connect(self.on_voice_state); self.assistant.heard.connect(lambda t: self.say(f"“{t}”" if t else "…", 0))
@@ -489,7 +218,6 @@ class Window(QWidget):
         if SETTINGS.get("speaker"): self.bt.request("reconnect", SETTINGS["speaker"]["mac"])
         self.sig=Signals(); self.sig.message.connect(self.handle); self.sig.status.connect(self.home.set_status)
         self.mqtt=MQTT(self.sig); self.mqtt.start()
-        self.clock_timer=QTimer(self); self.clock_timer.timeout.connect(self.home.update_clock); self.clock_timer.start(1000); self.home.update_clock()
         self.tick=QTimer(self); self.tick.timeout.connect(self.countdown); self.tick.start(200)
         self.audio_idle=QTimer(self); self.audio_idle.timeout.connect(self.audio.release_if_idle); self.audio_idle.start(5000)
         self.listen_timer=QTimer(self); self.listen_timer.timeout.connect(self.listen_tick); self.listen_timer.start(2000)
@@ -504,9 +232,17 @@ class Window(QWidget):
         self.sig.status.connect(lambda ok, _m: ok and (setattr(self, "fest_sent", None), QTimer.singleShot(500, self.check_festival)))
         self.settings.festival_changed.connect(self.check_festival); self.settings.festival_preview.connect(self.preview_festival)
         self.fest_timer=QTimer(self); self.fest_timer.timeout.connect(self.check_festival); self.fest_timer.start(60000)
+        self.fest_timer.timeout.connect(self.show_visits)  # "today" starts again at midnight
         self.check_festival()
         self.webapp=WebApp(self, SETTINGS, save_settings, TONES)  # the dashboard in browsers; last: it uses everything above
     def cfg_camera_url(self): return CFG.get("camera",{}).get("rtsp_url","")
+    def show_visits(self):
+        """Rings today and the last visitor's picture, for the home screen."""
+        rings=[e for e in self.recorder.entries if e.get("kind")=="ring"]
+        midnight=dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
+        last=max(rings, key=lambda e: e["time"]) if rings else None
+        thumb=recorder_mod.DIR/last["thumb"] if last and last.get("thumb") else None
+        self.home.set_visits(sum(1 for e in rings if e["time"]>=midnight), last["time"] if last else 0, thumb)
     def cfg_festivals(self): return CFG.get("festivals")
     def preview_festival(self, key):
         """Show a festival for one minute (Settings > Festivals > Try)."""
@@ -526,9 +262,9 @@ class Window(QWidget):
         tones=bool(key) and SETTINGS.get("festival_tones", True)
         FESTIVAL["key"]=key if tones else None
         text=festival_greeting(key, today) if key else ""
-        if self.home.festive.key!=key or self.home.festive.text!=text: self.home.festive.set_festival(key, text)
-        if key!=getattr(self, "look", None):  # wallpaper and page colours follow the festival
-            self.look=key; style(QApplication.instance(), key); self.home.scenic.set_festival(key)
+        if self.home.festival_key!=key or self.home.greeting!=text: self.home.set_festival(key, text)
+        if key!=getattr(self, "fest_look", None):  # wallpaper and page colours follow the festival
+            self.fest_look=key; style(QApplication.instance(), key, SETTINGS.get("look"))
         payload={"festival":key or "none","until":until or 0,"greeting":text,"tones":tones}
         if payload!=self.fest_sent and self.mqtt.publish(T_FESTIVAL, payload, retain=True): self.fest_sent=payload
     def demo_ring(self):
@@ -543,7 +279,7 @@ class Window(QWidget):
             o=self.settings.outdoor
             if topic==T_OUT_ONLINE:
                 online=payload.strip()=="online"
-                o.on_online(online); self.door_online=online; self.door_status_changed(online); self.web_publish(); return
+                o.on_online(online); self.door_online=online; self.home.set_door(online); self.door_status_changed(online); self.web_publish(); return
             try: data=json.loads(payload)
             except ValueError: return
             if topic==T_OUT_STATE and data.get("ip"): self.door_ip=data["ip"]  # where call audio goes
@@ -563,9 +299,13 @@ class Window(QWidget):
         except Exception as e: self.home.add_event("Invalid MQTT command: "+str(e))
     # ---------- voice ----------
     def resizeEvent(self, e):
-        super().resizeEvent(e)
+        super().resizeEvent(e); self.place_mic(); self.place_bubble()
+    def place_mic(self):
         self.mic.move(24, self.height()-self.mic.height()-BOTTOM_H-16); self.mic.raise_()  # above the market band and ticker
-        self.place_bubble()
+    def apply_look(self):
+        """Settings > Look: the pages' colours (a festival's own while it lasts) and the home page's layout."""
+        style(QApplication.instance(), getattr(self, "fest_look", None), SETTINGS.get("look"))
+        self.home.set_look(SETTINGS.get("look", looks.DEFAULT)); self.place_mic()
     def place_bubble(self):
         self.bubble.adjustSize(); w=min(self.width()-240, max(420, self.bubble.width()+60))
         self.bubble.setFixedSize(w, 72); self.bubble.move((self.width()-w)//2, self.height()-72-BOTTOM_H-24); self.bubble.raise_()
@@ -574,6 +314,7 @@ class Window(QWidget):
         self.bubble.setText(text); self.bubble.show(); self.place_bubble(); self.bubble_timer.stop()
         if hide_after: self.bubble_timer.start(hide_after)
     def on_voice_state(self, state):
+        self.home.set_mic(state)
         self.mic.setProperty("listening", state=="listening"); self.mic.style().unpolish(self.mic); self.mic.style().polish(self.mic)
         if state=="listening": self.say("Listening…", 0)
         elif state=="thinking": self.say("…", 0)
@@ -738,43 +479,31 @@ class Window(QWidget):
         if CFG.get("demo_mode",False): self.demo.start(18000)
     @staticmethod
     def fmt(s): return f"{s//60:02d}:{s%60:02d}"
+    def closeEvent(self,event):
+        self.door_live.stop(); self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
+
 def fmt_span(seconds):
     """3 h 20 min, 12 min, 1 day 4 h"""
     m=int(seconds//60); d, m=divmod(m, 1440); h, m=divmod(m, 60)
     return " ".join(t for t in (f"{d} day{'s' if d>1 else ''}" if d else "", f"{h} h" if h else "", f"{m} min" if (m or not (d or h)) and not d else "") if t)
-    def closeEvent(self,event):
-        self.door_live.stop(); self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
 
-# Colours of every page; a festival swaps in its own set (see Window.check_festival).
+# Colours of every page come from the look (looks.py); a festival swaps in its own set (see Window.check_festival).
+FEST_TEXT = dict(text="#edf3fb", text2="#b3c0d1")
 PALETTES = {
-    None: dict(bg="#0b111b", panel="#141f2d", button="#1b2a3d", border="#2c4058", line="#24364a", accent="#2f80ed",
-               on_accent="#ffffff", muted="#8ea1b8", list="#0f1824", count="#93c5fd", tag="#7cc4ff"),
-    "diwali": dict(bg="#1a0709", panel="#2a0e10", button="#3a1416", border="#6a2a22", line="#52201c", accent="#e8952a",
+    "diwali": dict(**FEST_TEXT, bg="#1a0709", panel="#2a0e10", button="#3a1416", border="#6a2a22", line="#52201c", accent="#e8952a",
                    on_accent="#2a1200", muted="#d9a86b", list="#210a0c", count="#ffc24a", tag="#ffc24a"),
-    "christmas": dict(bg="#071a10", panel="#0f2a1b", button="#15402a", border="#2b6a46", line="#1e5236", accent="#c8302f",
+    "christmas": dict(**FEST_TEXT, bg="#071a10", panel="#0f2a1b", button="#15402a", border="#2b6a46", line="#1e5236", accent="#c8302f",
                       on_accent="#ffffff", muted="#a9c9b4", list="#0b2116", count="#ff8a80", tag="#ff8a80"),
-    "new_year": dict(bg="#070b24", panel="#101a40", button="#18245a", border="#2f3f85", line="#223070", accent="#d4a537",
+    "new_year": dict(**FEST_TEXT, bg="#070b24", panel="#101a40", button="#18245a", border="#2f3f85", line="#223070", accent="#d4a537",
                      on_accent="#1a1400", muted="#a3aed6", list="#0c1434", count="#ffd54a", tag="#ffd54a"),
 }
-PALETTE = dict(PALETTES[None])
+PALETTE = dict(looks.get(looks.DEFAULT)["colors"])
 STYLE = Template("""
-    QWidget { background:$bg; color:#edf3fb; font-family:'DejaVu Sans'; font-size:15px; }
-    #dashboard,#ring { background:$bg; }
+    QWidget { background:$bg; color:$text; font-family:'$sans'; font-size:15px; }
+    #ring { background:$bg; }
     QLabel#section {color:$muted;font-size:12px;font-weight:700;letter-spacing:1px;}
-    QLabel#secondary {color:#b3c0d1;font-size:14px;}
-    QLabel#sectionTitle {font-size:20px;font-weight:700;}
-    QFrame#dashboard QLabel {background:transparent;}
-    QLabel#heroClock {font-size:112px;font-weight:300;color:#ffffff;}
-    QLabel#heroDate {font-size:26px;color:#f1f5fb;padding-left:6px;}
-    QLabel#status {color:#fbbf24;font-size:13px;font-weight:700;background:rgba(10,16,26,150);border-radius:14px;padding:7px 14px;}
-    QLabel#status[connected="true"] {color:#34d399;}
-    QFrame#glass {background:rgba(10,16,26,140);border:1px solid rgba(255,255,255,38);border-radius:22px;}
-    QPushButton#tile {background:rgba(255,255,255,16);border:0;border-radius:16px;padding:0;}
-    QPushButton#tile:pressed {background:rgba(255,255,255,60);}
-    QLabel#tileIcon {font-size:28px;color:#ffffff;}
-    QLabel#tileText {font-size:12px;color:#dfe7f2;}
-    QLabel#glassTitle {color:#b9c6d6;font-size:12px;font-weight:700;letter-spacing:1px;}
-    QLabel#eventText {color:#f1f5fb;font-size:14px;}
+    QLabel#secondary {color:$text2;font-size:14px;}
+    QLabel#sectionTitle {font-family:'$display';font-size:$title_px;font-weight:$title_weight;}
     QFrame#video {background:#000;border:1px solid $line;border-radius:18px;}
     QLabel#videoView {background:#000;border-radius:18px;}
     QLabel#camNote {background:transparent;color:$muted;font-size:14px;padding:6px;}
@@ -793,13 +522,13 @@ STYLE = Template("""
     QPushButton#talk {background:#2fa36b;color:white;border:0;border-radius:24px;font-size:26px;font-weight:700;}
     QPushButton#talk:pressed {background:#258556;}
     QPushButton#talk[calling="true"] {background:#e8952a;}
-    QPushButton {background:$button;color:#edf3fb;border:1px solid $border;border-radius:14px;font-size:17px;padding:0 18px;}
+    QPushButton {background:$button;color:$text;border:1px solid $border;border-radius:14px;font-size:17px;padding:0 18px;}
     QPushButton:pressed {background:$line;}
     QPushButton:checked {background:$accent;border-color:$accent;color:$on_accent;}
     QPushButton#subtab {background:transparent;border:0;border-bottom:3px solid transparent;border-radius:0;font-size:19px;color:$muted;}
-    QPushButton#subtab:checked {color:#ffffff;border-bottom:3px solid $accent;background:transparent;}
+    QPushButton#subtab:checked {color:$text;border-bottom:3px solid $accent;background:transparent;}
     QPushButton#nav {text-align:left;padding-left:24px;font-size:19px;}
-    QLabel#pageTitle {font-size:30px;font-weight:700;}
+    QLabel#pageTitle {font-family:'$display';font-size:$page_px;font-weight:$title_weight;}
     QPushButton#eventCard {background:$panel;border:1px solid $line;border-radius:18px;padding:0;}
     QPushButton#eventCard:pressed {background:$button;}
     QPushButton#mic {background:rgba(10,16,26,170);color:#ffffff;border:2px solid rgba(255,255,255,90);border-radius:42px;font-size:40px;padding:0;}
@@ -807,6 +536,11 @@ STYLE = Template("""
     QPushButton#mic[listening="true"] {background:#e5484d;border-color:#ffffff;}
     QLabel#bubble {background:rgba(10,16,26,215);color:#ffffff;border:1px solid rgba(255,255,255,70);border-radius:36px;font-size:24px;padding:0 28px;}
     QPushButton#eventCard:checked {background:$button;border:3px solid $accent;}
+    QPushButton#lookCard {background:$panel;border:2px solid $line;border-radius:18px;padding:0;}
+    QPushButton#lookCard:checked {background:$button;border:3px solid $accent;}
+    QPushButton#lookCard QLabel {background:transparent;}
+    QLabel#lookName {font-size:20px;font-weight:700;}
+    QLabel#lookAbout {font-size:14px;color:$text2;}
     QLabel#eventPic {background:#000;border-radius:12px;color:$muted;}
     QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;}
     QLabel#eventTime {font-size:14px;color:$muted;background:transparent;}
@@ -830,11 +564,12 @@ STYLE = Template("""
     QPushButton#kbOk {font-size:20px;background:$accent;border-color:$accent;}
     """)
 
-def style(app, festival=None):
-    PALETTE.clear(); PALETTE.update(PALETTES.get(festival, PALETTES[None]))
-    app.setStyleSheet(STYLE.substitute(PALETTE))
+def style(app, festival=None, look=None):
+    """Every page's colours (the festival's while one is on, else the look's) and the look's fonts (Settings > Look)."""
+    PALETTE.clear(); PALETTE.update(PALETTES.get(festival) or looks.get(look)["colors"])
+    app.setStyleSheet(STYLE.substitute(PALETTE, **looks.get(look)["type"]))
 def main():
-    app=QApplication(sys.argv); style(app); w=Window()
+    app=QApplication(sys.argv); style(app, None, SETTINGS.get("look")); w=Window()
     # Quit cleanly on SIGTERM; the timer gives Python a chance to run the handler.
     signal.signal(signal.SIGTERM, lambda *a: app.quit())
     keepalive=QTimer(); keepalive.timeout.connect(lambda: None); keepalive.start(500)

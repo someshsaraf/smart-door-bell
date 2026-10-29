@@ -109,21 +109,33 @@ capacitive touch, QSPI display interface (TuyaOpen board `WAVESHARE_T5AI_TOUCH_A
 </table>
 
 - 🕒 **Ambient home screen** — large clock and date over a full-screen backdrop; one tap switches **News ⇄ Photos**
-- 📰 **News like a TV channel** — the top stories of *NDTV, Times of India, BBC, Yahoo News* and *Google News* (by region
-  and topic; optionally also *The Hindu, Hindustan Times*) one at a time with photo, channel badge and summary; swipe or tap ‹ › to
-  go back and forth. A big red **BREAKING** ticker scrolls the newest headlines along the bottom (*LATEST* when nothing
-  is under 90 minutes old), and a new story under 20 minutes old flashes as a **BREAKING NEWS** banner. From the
-  channels' public RSS feeds, no login; cached for offline starts
-- 📈 **Market band** — **NIFTY 50** and **SENSEX** and the NIFTY's top gainers and losers above the ticker, every 2 minutes
+- 📰 **News** — the top stories of *NDTV, Times of India, BBC, Yahoo News* and *Google News* (by region and topic;
+  optionally also *The Hindu, Hindustan Times*) one at a time with photo, channel and summary; swipe or tap ‹ › to go
+  back and forth. The newest headlines glide past along the foot (*BREAKING* while any is under 90 minutes old), and a
+  new story under 20 minutes old slides in as a **BREAKING** banner. From the channels' public RSS feeds, no login;
+  cached for offline starts
+- 📈 **Market** — **NIFTY 50** and **SENSEX** and the NIFTY's top gainers and losers, every 2 minutes
   during market hours (the last session's close otherwise), from Yahoo Finance via `yfinance` — no account. The NIFTY 50
   members come from NSE's published list. Yahoo's Indian prices can lag the exchange by a few minutes
-- 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes; drop your own pictures into `Indoor/assets/scenic/`
+- 🏞️ **Photo slideshow** — 12 hand-picked Unsplash landscapes, slowly zooming and cross-fading; drop your own pictures
+  into `Indoor/assets/scenic/`
+- 🎨 **Four looks, drawn on the GPU** — the home screen is Qt Quick: real frosted-glass blur, soft shadows, smooth
+  motion, Inter and EB Garamond type. Settings → Look picks one, and the other pages and the web page take its colours:
+  - *Editorial* — a calm magazine page in ink: a big serif clock, the **Front door** as the one bold button, a
+    contents-style list for the rest, the story set like a feature
+  - *Paper* — the same page on warm paper, for a bright room
+  - *Glass* — like a phone's home screen: frosted widgets over the story's photo, with a big **Front door** widget
+    showing the camera's latest picture (refreshed every minute), rings today, and a News/Photos switch
+  - *Fluent* — like a Windows app: a navigation pane with an accent **Front door** button, an info bar for breaking
+    news, and cards for the story, the front door, recent activity and the market on a soft Mica backdrop
+
+  In every look the voice button is a softly swirling orb (*"Ask the doorbell"*) that comes alive while listening
 - 🚪 **Visitor alert** — the door camera full screen like a video call: *VISITOR AT THE DOOR* with the ring time, a REC
   badge while it records, a countdown ring and a big **STOP** (which also returns the doorbell to its main screen);
   the **Front door** tile opens the same view live, any time. The doorbell's microphone plays with the picture, delayed
   to match it, with no button to press: while ringing it mixes with the chime. Browsers do the same (a phone that has
   not been tapped yet shows *Tap for sound* first, as browsers require)
-- 🎙️ **Voice commands, all on the Pi** — tap ◉ (bottom left) and say *"Stop the bell"*, *"Mute the bell for an hour"*,
+- 🎙️ **Voice commands, all on the Pi** — tap the orb (◉ on the other pages) and say *"Stop the bell"*, *"Mute the bell for an hour"*,
   *"Show me all events"*, *"Show events from yesterday / last Monday / 20 October / this week"*, *"Play the last
   recording"*, *"Who is at the front door"*, *"Go home"*. Speech recognition is Whisper on the Pi's CPU (~2 s per
   command, nothing sent to the cloud). Needs a USB microphone; the Bluetooth speaker's microphone is never used
@@ -299,7 +311,9 @@ doorbell/
 ├── Indoor/                  Raspberry Pi dashboard (Python, PySide6)
 │   ├── app.py                 dashboard, ring screen, camera, MQTT
 │   ├── settings_ui.py         settings screens and on-screen keyboard
-│   ├── news.py · news_ui.py   news feeds · TV-style news painting
+│   ├── home_qml.py · home/    home screen in Qt Quick (GPU): the looks, widgets, orb
+│   ├── looks.py               the looks: layouts, colours and type of every page
+│   ├── news.py                news feeds
 │   ├── markets.py             NIFTY / SENSEX band (yfinance)
 │   ├── ring_ui.py             visitor screen
 │   ├── web.py · webapp.py     web server · the dashboard's data and actions for browsers

@@ -708,6 +708,40 @@ class OutdoorPanel(QWidget):
         self.wifi_now.setText(f"Wi-Fi: {s['wifi_ssid']} (doorbell IP {s.get('ip') or 'none'})" if s.get("wifi_ssid") else "Wi-Fi: not reported yet")
         self.broker.setText(f"Indoor unit address: {s['broker']}" if s.get("broker") else "Indoor unit address: not reported yet")
 
+class LookPanel(QWidget):
+    """How the whole screen looks: the pages' colours and the home page's layout (looks.py)."""
+    on_look = None  # set by the window: applies the choice straight away
+
+    def __init__(self, settings, save):
+        super().__init__()
+        import looks
+        self.looks = looks; self.settings = settings; self.save_settings = save; self.cards = {}
+        lay = QVBoxLayout(self); lay.setSpacing(10)
+        lay.addWidget(label("Look", "sectionTitle"))
+        lay.addWidget(label("The home screen's layout and the colours and type of every page. "
+                            "Tap one to try it: the screen changes straight away.", "secondary", True))
+        grid = QGridLayout(); grid.setSpacing(16); group = QButtonGroup(self)
+        for i, (key, look) in enumerate(looks.LOOKS.items()):
+            b = QPushButton(); b.setObjectName("lookCard"); b.setCheckable(True); b.setFixedHeight(316); group.addButton(b)
+            cl = QVBoxLayout(b); cl.setContentsMargins(14, 14, 14, 12); cl.setSpacing(6)
+            pic = QLabel(); pic.setFixedHeight(204)
+            if looks.preview(key):
+                pic.setPixmap(QPixmap(str(looks.preview(key))).scaledToHeight(204, Qt.SmoothTransformation))
+            for w in (pic, label(look["name"], "lookName"), label(look["about"], "lookAbout", True)):
+                w.setAttribute(Qt.WA_TransparentForMouseEvents); cl.addWidget(w)
+            cl.addStretch()
+            b.clicked.connect(lambda _=False, k=key: self.choose(k)); self.cards[key] = b
+            grid.addWidget(b, i // 2, i % 2)
+        lay.addLayout(grid); lay.addStretch(); self.sync()
+
+    def choose(self, key):
+        self.settings["look"] = key; self.save_settings()
+        if self.on_look: self.on_look()
+
+    def sync(self):
+        key = self.settings.get("look")
+        self.cards[key if key in self.cards else self.looks.DEFAULT].setChecked(True)
+
 class SettingsPage(QFrame):
     back = Signal()
     festival_changed = Signal()
@@ -725,17 +759,17 @@ class SettingsPage(QFrame):
         self.phone = PhonePanel(settings, save, notifier)
         self.camera = CameraPanel(settings, save)
         self.camera.ring_seconds = lambda: self.outdoor.state.get("ring_seconds")
-        self.webaccess = WebAccessPanel(settings, save)
+        self.webaccess = WebAccessPanel(settings, save); self.look = LookPanel(settings, save)
         group = QButtonGroup(self)
-        for i, (text, panel) in enumerate([("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
+        for i, (text, panel) in enumerate([("Look", self.look), ("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
                                            ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Web access", self.webaccess), ("Outdoor unit", self.outdoor)]):
             panel_frame = QFrame(); panel_frame.setObjectName("panel"); QVBoxLayout(panel_frame).addWidget(panel); self.stack.addWidget(panel_frame)
-            nb = button(text, "nav", True, 72); group.addButton(nb); nav.addWidget(nb)
+            nb = button(text, "nav", True, 64); group.addButton(nb); nav.addWidget(nb)
             nb.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i)); nb.setChecked(i == 0)
         nav.addStretch(); navw = QWidget(); navw.setLayout(nav); navw.setFixedWidth(240)
         body.addWidget(navw); body.addWidget(self.stack, 1); root.addLayout(body, 1)
 
     def sync(self):
         """A setting was changed in a browser: the buttons here show it too."""
-        for panel in (self.speaker, self.tone, self.news, self.camera, self.phone, self.festivals): panel.sync()
+        for panel in (self.look, self.speaker, self.tone, self.news, self.camera, self.phone, self.festivals): panel.sync()
         self.webaccess.refresh()

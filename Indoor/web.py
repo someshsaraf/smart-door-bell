@@ -29,7 +29,7 @@ PORT = 8080
 SESSION_DAYS = 90
 # files the pages use, by URL prefix (all need a session)
 FILES = {"/photos/": ROOT / "assets" / "scenic", "/bells/": ROOT / "assets" / "bells",
-         "/tones/": ROOT / "assets" / "tones", "/news_img/": ROOT / "news_images"}
+         "/tones/": ROOT / "assets" / "tones", "/news_img/": ROOT / "news_images", "/looks/": ROOT / "assets" / "looks"}
 
 
 # ---------- password and sessions ----------

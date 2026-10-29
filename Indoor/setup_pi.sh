@@ -21,6 +21,11 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq python3-pyside6.qtwidgets python3-pyside6.qtgui python3-pyside6.qtcore \
     python3-pygame python3-opencv python3-paho-mqtt python3-numpy python3-venv \
     mosquitto mosquitto-clients ffmpeg
+# the home screen: Qt Quick on the GPU, and its typefaces
+sudo apt-get install -y -qq python3-pyside6.qtqml python3-pyside6.qtquick python3-pyside6.qtquickwidgets \
+    qml6-module-qtquick qml6-module-qtquick-effects qml6-module-qtquick-layouts qml6-module-qtquick-window \
+    qml6-module-qtquick-shapes qml6-module-qtquick-particles qml6-module-qtqml-workerscript \
+    qml6-module-qtquick-templates qt6-svg-plugins fonts-inter-variable fonts-ebgaramond
 
 echo "== 2/5 dashboard files -> $dst"
 if [ "$src" != "$dst" ]; then

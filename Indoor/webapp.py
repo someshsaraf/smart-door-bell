@@ -17,12 +17,13 @@ import camera_cfg, push
 from festivals import FESTIVALS, upcoming
 from news import CHANNELS, DEFAULT_CHANNELS, GENRES, REGIONS
 from recorder import CLIP_S, PRE_S, RING_S
+import looks
 from settings_ui import (OUTDOOR_BELLS, OUTDOOR_CHIMES, OUTDOOR_DURATIONS, OUTDOOR_STYLES, OUTDOOR_THEMES, OUTDOOR_VOLUMES,
                          BELL_ICONS, list_tones, web_addresses)
 from web import secure_url
 
 ASYNC = object()  # an action that answers later, from a worker thread
-DEFAULTS = {"tone": "ding_dong.wav", "intercom": False, "news_channels": DEFAULT_CHANNELS, "news_regions": ["india"],
+DEFAULTS = {"look": looks.DEFAULT, "tone": "ding_dong.wav", "intercom": False, "news_channels": DEFAULT_CHANNELS, "news_regions": ["india"],
             "news_genres": ["top"], "record_seconds": CLIP_S, "record_audio": True, "offline_alert_min": 15, "notify": False, "festival_themes": True,
             "festival_tones": True, "home_view": "news"}
 OUTDOOR_KEYS = {"theme", "bell_color", "bell_style", "glow", "chime", "chime_repeat", "volume", "ring_seconds", "screen_off"}
@@ -36,7 +37,7 @@ class WebApp(QObject):
         self.web.action.connect(self.on_action)
         w.news.updated.connect(self.news); w.news.breaking.connect(self.breaking)
         w.markets.updated.connect(lambda d: self.web.publish("market", {"data": d, "note": ""}))
-        w.markets.status.connect(lambda note: self.web.publish("market", {"data": w.home.scenic.market, "note": note}))
+        w.markets.status.connect(lambda note: self.web.publish("market", {"data": w.home.market, "note": note}))
         w.recorder.saved.connect(lambda _e: self.events())
         w.home.logged.connect(self.on_log)
         w.bt.devices.connect(lambda devs: self.set_speaker(devices=devs))
@@ -51,10 +52,10 @@ class WebApp(QObject):
     def publish_all(self):
         """Everything, once the server runs (later only what changes)."""
         if not self.web.server: return
-        self.slow(); self.news(self.w.home.scenic.news); self.breaking(self.w.home.scenic.breaking)
-        self.web.publish("market", {"data": self.w.home.scenic.market, "note": self.w.home.scenic.market_note})
-        sc = self.w.home.scenic
-        self.web.publish("photos", [{"url": "/photos/" + p.name, "credit": sc.credits.get(p.name, "")} for p in sc.base_paths])
+        h = self.w.home
+        self.slow(); self.news(h.news); self.breaking(h.breaking)
+        self.web.publish("market", {"data": h.market, "note": h.market_note})
+        self.web.publish("photos", [{"url": "/photos/" + p.name, "credit": h.credits.get(p.name, "")} for p in h.base_paths])
         self.events(); self.camera(); self.outdoor(); self.web.publish("log", self.log)
         self.web.publish("speaker", self.speaker); self.w.bt.request("list")
 
@@ -70,7 +71,7 @@ class WebApp(QObject):
             "total": getattr(w, "ring_total", 0), "rang_at": w.ring.rang_at, "door_online": w.door_online,
             "muted_until": muted, "camera": bool(camera_cfg.url() or w.cfg_camera_url()),
             "mqtt": {"ok": self.mqtt[0], "text": self.mqtt[1]},
-            "festival": {"key": w.home.festive.key, "text": w.home.festive.text},
+            "festival": {"key": w.home.festival_key, "text": w.home.greeting},
             "home_view": self.settings.get("home_view", "news"), "intercom": self.settings.get("intercom", False)})
 
     def news(self, items):
@@ -81,7 +82,7 @@ class WebApp(QObject):
             out.append({"title": i["title"], "source": i.get("source") or ch[0], "time": i.get("time"),
                         "summary": i.get("summary", ""), "img": "/news_img/" + img if img else "", "color": ch[1],
                         "tag": i.get("genre") or "", "region": i.get("region") or ""})
-        self.web.publish("news", {"items": out, "note": self.w.home.scenic.news_note})
+        self.web.publish("news", {"items": out, "note": self.w.home.news_note})
 
     def breaking(self, items):
         self.web.publish("breaking", [{"title": i["title"], "source": i.get("source", ""), "time": i.get("time")} for i in items])
@@ -120,6 +121,7 @@ class WebApp(QObject):
             "regions": [{"key": k, "name": v[0]} for k, v in REGIONS.items()],
             "genres": [{"key": k, "name": v[0]} for k, v in GENRES.items()],
             "record": {"pre": PRE_S, "ring_default": RING_S},
+            "looks": [{"key": k, "name": v["name"], "about": v["about"], "colors": v["colors"]} for k, v in looks.LOOKS.items()],
             "festivals": [{"key": k, "name": v[0]} for k, v in FESTIVALS.items()],
             "upcoming": [{"name": FESTIVALS[k][0], "first": f"{a:%a %d %b}", "last": f"{b:%a %d %b %Y}"}
                          for k, a, b in upcoming(__import__("datetime").date.today(), self.w.cfg_festivals())],
@@ -207,9 +209,11 @@ class WebApp(QObject):
         elif key == "record_seconds":  # 1 s up to the ring's length
             top = max(1, int(self.w.settings.outdoor.state.get("ring_seconds") or RING_S))
             if not isinstance(value, int) or not 1 <= value <= top: return {"ok": False, "error": f"1 to {top} seconds"}
+        elif key == "look":
+            if value not in looks.LOOKS: return {"ok": False, "error": "no such look"}
         elif key == "home_view":
             if value not in ("news", "photos"): return {"ok": False}
-            self.w.home._set_view(value); return {"ok": True}  # the wall saves it itself
+            self.w.home.set_view(value); return {"ok": True}  # the wall saves it itself
         else: return {"ok": False, "error": "not a setting"}
         self.settings[key] = value
         if key == "news_regions": self.settings.pop("news_region", None)
@@ -217,6 +221,7 @@ class WebApp(QObject):
         if key in lists: self.w.news.refresh()
         if key.startswith("festival_"): self.w.check_festival()
         if key == "record_audio": self.w.recorder.buffer.restart()
+        if key == "look": self.w.apply_look()
         self.w.settings.sync(); self.settings_part(); self.state()
 
     def do_play_tone(self, d, _r):
