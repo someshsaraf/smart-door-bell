@@ -255,15 +255,34 @@ setInterval(() => { if (!document.hidden && page === "home" && view === "photos"
 // ---------- front door ----------
 function watch() {
   $("live").src = "/api/live.mjpg?t=" + Date.now();
-  $("live-placeholder").classList.add("hidden"); $("live-close").classList.remove("hidden");
+  $("live-placeholder").classList.add("hidden"); $("live-close").classList.remove("hidden"); $("live-full").classList.remove("hidden");
   hearDoor();
 }
 function stopWatching() {
   if (!$("live").getAttribute("src")) return;
+  fullView(false);
   $("live").removeAttribute("src");
-  $("live-placeholder").classList.remove("hidden"); $("live-close").classList.add("hidden");
+  $("live-placeholder").classList.remove("hidden"); $("live-close").classList.add("hidden"); $("live-full").classList.add("hidden");
   hearDoor();
 }
+// Full screen: the browser's own where it has one (turned to landscape on phones that allow it);
+// iPhone Safari has none for a picture, so there the frame fills the window instead.
+const liveFrame = document.querySelector("#page-door .live-frame");
+const isFull = () => document.fullscreenElement === liveFrame || liveFrame.classList.contains("full");
+function fullView(on) {
+  const filled = () => { liveFrame.classList.add("full"); fullChanged(); };
+  if (!on) {
+    liveFrame.classList.remove("full"); fullChanged();
+    if (document.fullscreenElement === liveFrame) document.exitFullscreen().catch(() => {});
+  } else if (liveFrame.requestFullscreen) {
+    liveFrame.requestFullscreen().then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(() => {}))
+      .catch(filled);
+  } else filled();
+}
+function fullChanged() { $("live-full").textContent = isFull() ? "⤡" : "⛶"; $("live-full").title = isFull() ? "Exit full screen" : "Full screen"; }
+$("live-full").onclick = () => fullView(!isFull());
+document.addEventListener("fullscreenchange", fullChanged);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && liveFrame.classList.contains("full")) fullView(false); });
 // The door's sound plays whenever its picture does. The Pi sends it as far behind real time as the
 // picture; if this player falls further behind, it plays a little faster until it is back.
 // Browsers only start sound after a tap on the page: until then "Tap for sound" shows, and any tap starts it.
@@ -325,7 +344,7 @@ function renderEvents() {
   if (!list.length) { box.innerHTML = `<p class="muted">No ${evKind === "ring" ? "bell presses" : evKind === "motion" ? "movements" : "events"} here.</p>`; return; }
   box.innerHTML = list.map((e) => `<button class="event${selected.has(e.time) ? " sel" : ""}" data-t="${e.time}">
     <div class="thumb" ${e.thumb ? `style="background-image:url('/media/${encodeURI(e.thumb)}')"` : ""}>${e.thumb ? "" : esc(e.note || "No recording")}</div>
-    <div class="meta"><span class="kind ${e.kind === "motion" ? "motion" : "ring"}">${esc(evTitle(e))}</span><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span></div><span class="tick">✓</span></button>`).join("");
+    <div class="meta"><span class="kind${e.kind === "motion" ? " motion" : ""}">${esc(evTitle(e))}</span><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span></div><span class="tick">✓</span></button>`).join("");
 }
 $("events").addEventListener("click", (e) => {
   const b = e.target.closest("[data-t]"); if (!b) return;
@@ -460,7 +479,7 @@ function renderSection() {
 function applyLook() {
   const l = ((P.settings || {}).looks || []).find((x) => x.key === vals().look); if (!l) return;
   const c = l.colors, root = document.documentElement.style;
-  for (const [v, k] of [["--bg", "bg"], ["--panel", "panel"], ["--panel2", "button"], ["--line", "line"], ["--text", "text"], ["--muted", "muted"], ["--accent", "accent"]])
+  for (const [v, k] of [["--bg", "bg"], ["--panel", "panel"], ["--panel2", "button"], ["--line", "line"], ["--text", "text"], ["--muted", "muted"], ["--accent", "accent"], ["--on-accent", "on_accent"]])
     root.setProperty(v, c[k]);
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", c.bg);
 }

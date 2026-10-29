@@ -1,9 +1,8 @@
 <div align="center">
 
-# 🔔 Smart Doorbell
+# 🔔 Smart Video Door Bell
 
-**A round touch-screen doorbell at the door, and a wall dashboard inside that rings, shows and lets you hear who is
-there, and records every visit — with an on-device AI that tells people, animals and vehicles from leaves and insects.**
+**A completely DIY video doorbell : open hardware and open software, built end to end at home.**
 
 ![TuyaOpen](https://img.shields.io/badge/TuyaOpen-T5AI-ff4800)
 ![LVGL](https://img.shields.io/badge/LVGL-9.1-2f80ed)
@@ -13,38 +12,36 @@ there, and records every visit — with an on-device AI that tells people, anima
 ![Qt Quick](https://img.shields.io/badge/Qt%20Quick-GPU-41cd52?logo=qt&logoColor=white)
 ![MQTT](https://img.shields.io/badge/MQTT-TLS--PSK-660066?logo=eclipsemosquitto&logoColor=white)
 
-<table>
-<tr>
-<td width="62%"><img src="docs/images/indoor_wall.jpg" alt="The indoor dashboard on its 12.3-inch display: clock, Front door card with the camera's picture, Events, Photos and Settings tiles, and a news story full-bleed with its headline"></td>
-<td width="38%"><img src="docs/images/outdoor_door.jpg" alt="The outdoor unit on the wall by the door: a round display showing a blue bell, the time and the date"></td>
-</tr>
-<tr>
-<td align="center"><b>Indoor</b> — Raspberry Pi 5 + Hailo-8L on a 12.3″ touch display</td>
-<td align="center"><b>Outdoor</b> — 1.75″ round AMOLED on a Tuya T5</td>
-</tr>
-</table>
-
 </div>
 
----
+## 🛠️ A completely DIY project
 
-## ✨ Highlights
+Everything in this doorbell was chosen, assembled and written by hand: selecting the boards, display, camera and AI
+accelerator, wiring and connecting them, and every line of software: the round touch screen at the door, the wall
+dashboard inside, the AI recorder, the web app and phone alerts.
 
-| | |
-|---|---|
-| 🧠 **AI-triggered recording** | A **Hailo-8L** AI accelerator watches the door around the clock. Only a **person, animal or vehicle that moves** starts a recording — never swaying leaves, shadows, rain or insects |
-| 🎬 **Every visit on video, with sound** | Rings and movements are recorded from **before** they happen (3 s before a press, 5 s before a movement) with the **doorbell's own microphone**, in sync with the picture |
-| 🔔 **Ring** | Tap the round screen: the bell swings, a chime plays inside on a Bluetooth speaker and the wall shows the door camera with a big **STOP** |
-| 📷 **See and hear the door** | The **Front door** view: live camera, live sound, and red boxes around the people, animals and vehicles the AI sees |
-| 🎛️ **Doorbell set up from the wall** | Theme, bell, chime, volume, ring time, night screen, Wi-Fi and more — all changed from the dashboard, nothing to do at the door |
-| 🖥️ **A beautiful wall screen** | Four looks drawn on the GPU — *Editorial*, *Paper*, *Glass*, *Fluent* — with live news, markets and photos between visitors |
-| 📱 **Phones** | The whole dashboard as a web app, and ring alerts with the visitor's picture and **Stop the bell** — even with the page closed |
-| 🎙️ **Voice** | *"Stop the bell"*, *"Show events from yesterday"*, *"Play the last recording"* — understood on the Pi, offline |
-| 🩺 **Peace of mind** | An alert when the doorbell goes offline · an encrypted link between the units · nothing leaves your home network |
+**Why I built it:** a doorbell bought off the shelf does what its maker decided, in their app and their cloud.
+Building it myself gives me the **freedom to customise every feature** : how it looks and sounds, what it records,
+where the videos are kept, how it alerts me : and a platform for my own **AI-based developments**, like teaching it
+to record only people, animals and vehicles. Nothing is locked, nothing leaves the home network unless I want it to.
+
+Think of it as **open hardware and open software**: off-the-shelf parts anyone can buy, open-source firmware and
+software anyone can read, change and build on.
 
 ---
 
 ## 🗺️ The setup
+
+<table>
+<tr>
+<td width="62%"><img src="docs/images/indoor_wall.jpg" alt="The indoor unit on the wall: the 12.3-inch dashboard with the clock, the Front door card, Events, Photos and Settings tiles and a news story"></td>
+<td width="38%"><img src="docs/images/outdoor_door.jpg" alt="The outdoor unit on the wall by the door: a round display showing a blue bell, the time and the date"></td>
+</tr>
+<tr>
+<td align="center"><b>Indoor unit</b> : Raspberry Pi 5 + Hailo-8L AI on a 12.3″ touch display</td>
+<td align="center"><b>Outdoor unit</b> : 1.75″ round touch AMOLED on a Tuya T5</td>
+</tr>
+</table>
 
 ```mermaid
 flowchart LR
@@ -77,13 +74,209 @@ flowchart LR
     PH <-. "home Wi-Fi or Tailscale" .-> P
 ```
 
-The doorbell and the Pi meet on your home Wi-Fi (the doorbell is 2.4 GHz only). The Pi runs the MQTT broker the
-doorbell talks to, reads the camera over RTSP, runs the AI on the Hailo and serves the web app — no cloud account
+The doorbell and the Pi meet on the home Wi-Fi (the doorbell is 2.4 GHz only). The Pi runs the MQTT broker the
+doorbell talks to, reads the camera over RTSP, runs the AI on the Hailo and serves the web app : no cloud account
 anywhere. More: **[Hardware](docs/hardware.md)**.
 
 ---
 
-## 🧭 How a ring works
+## ✨ Features
+
+### 1. 🖥️ Indoor unit display
+
+#### A dashboard on the wall
+
+<img src="docs/images/indoor_home.jpg" alt="The dashboard home screen: date and clock, the Front door card with the camera's picture and Online status, Events, Photos and Settings tiles, the last event, the Ask the doorbell button, and a news story with the market band and breaking ticker" width="100%">
+
+When nobody is at the door the wall shows a calm home screen, drawn on the Pi's GPU with Qt Quick:
+
+- 🕒 **Clock and date**, large
+- 🚪 **Front door** : the camera's latest picture (refreshed every minute) and whether the doorbell is online; one
+  tap opens the live camera
+- ▶️ **Events** · 🏞️ **Photos** · ⚙️ **Settings** : one tap each
+- 📰 **News like a TV channel** : top stories from NDTV, Times of India, BBC, Yahoo News and Google News with photo
+  and summary, a **breaking-news** ticker and banner
+- 📈 **Markets** : NIFTY 50, SENSEX and the day's top gainers and losers
+- 🏞️ **Photo slideshow** with a slow Ken Burns drift, instead of the news
+- 🎙️ **"Ask the doorbell"** : offline voice commands: *"Stop the bell"*, *"Show events from yesterday"*,
+  *"Play the last recording"*
+- 🎨 **Four looks** : *Editorial*, *Paper*, *Glass*, *Fluent*
+
+#### Front door camera
+
+<table>
+<tr>
+<td width="62%"><img src="docs/images/web_front_door.jpg" alt="The Front door page: the live camera picture of the porch with a close button, a full-screen button and Tap for sound"></td>
+<td width="38%"><img src="docs/images/phone_full_screen.jpg" alt="The live camera full screen on a phone"></td>
+</tr>
+<tr>
+<td align="center">Live picture <b>and sound</b> from the door, any time</td>
+<td align="center"><b>Full screen</b> on a phone</td>
+</tr>
+</table>
+
+- 📷 **Live view** with the doorbell's microphone, delayed to match the picture
+- ⛶ **Full screen** : the browser's own full screen (turned to landscape where the phone allows), or the picture
+  filling the window on iPhone
+- 🚨 **When someone rings** the wall becomes the door: *VISITOR AT THE DOOR*, the camera full screen like a video
+  call, a countdown and a big **STOP** that also returns the doorbell to its main screen
+- 🔇 **Mute the bell** for 1 or 8 hours · 🗣️ **talk to the visitor** (trial)
+
+#### Events
+
+<table>
+<tr>
+<td width="68%"><img src="docs/images/web_events.jpg" alt="The Events page: a grid of recordings labelled Motion · Person, Motion · Person, Dog, Motorbike, Bell pressed, each with its time and length (thumbnails blurred here for privacy)"></td>
+<td width="32%"><img src="docs/images/phone_events.jpg" alt="The Events page on a phone"></td>
+</tr>
+<tr>
+<td colspan="2" align="center">Every ring and movement, labelled with what the AI saw <sub>(thumbnails blurred here for privacy)</sub></td>
+</tr>
+</table>
+
+- 🗂️ Filters: **All / Today / Yesterday / 7 days** and **Everything / Bell / Motion**
+- ▶️ Tap to play, with sound; **select** and delete one or many
+- 💾 When the SD card runs low, the **oldest motion clips make room first**; rings are kept longest
+
+#### AI-based recording when motion is detected
+
+The Pi carries a **[Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/)**: a **Hailo-8L** neural-network
+accelerator (13 TOPS) on the Pi 5's PCIe connector. It runs **YOLOv8s** on the door camera in about **33 ms a
+frame**, watching the door around the clock while the Pi's CPU stays free for everything else.
+
+**Only a person, an animal or a vehicle that moves starts a recording.** Insects, leaves, swaying trees, rain,
+shadows and headlight sweeps never do.
+
+| Seen by the camera | Recorded? |
+|---|---|
+| 🚶 A person walking up the path | ✅ yes |
+| 🐕 A dog or cat crossing the drive | ✅ yes |
+| 🚗 A car or motorbike driving in | ✅ yes |
+| 🍃 Leaves, branches and trees moving in the wind | ❌ never : not a person, animal or vehicle |
+| 🦟 Insects on the lens, rain, shadows, headlight sweeps | ❌ never |
+| 🛵 A car or scooter parked in view | ❌ no : present, but not moving |
+
+🎬 **Video with audio.** Every recording : ring or motion : has the **doorbell's own microphone**, lined up with the
+picture sample by sample. Recordings start **before** the event: 3 s before a bell press, 5 s before a movement.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 📷 Camera
+    participant P as 🍓 Raspberry Pi
+    participant H as 🧠 Hailo-8L
+    participant O as 🛎️ Doorbell
+    loop always, 5 frames a second
+        C->>P: small video stream
+        P->>H: frame
+        H-->>P: people · animals · vehicles, with boxes
+        Note over P: follow each one between frames:<br/>did it actually move?
+    end
+    Note over P: 🚶 a person walks in
+    P->>O: listen {pre_ms: 7000}
+    O-)P: its sound, from 7 s back
+    Note over P: cut the clip from the last 90 s kept in RAM:<br/>5 s before → 55 s after, with the doorbell's sound
+    Note over P: Events: "Motion · Person"
+```
+
+Details: **[Recordings & detection](docs/recordings.md)**.
+
+#### Settings
+
+Everything is set from the **Settings** page : on the wall, or in the web app on a phone or laptop:
+
+| Section | What it controls |
+|---|---|
+| **Look** | The four home-screen looks, with previews; every page takes its colours |
+| **Speaker** | Search, pair, connect and forget Bluetooth speakers, volume, test sound, two-way talk (trial) |
+| **Bell tone** | 16 original tones : chimes, Bollywood style, festive and funny : previewed on the phone or the speaker, or your own |
+| **News** | Channels (NDTV, Times of India, BBC, The Hindu, Hindustan Times, Yahoo, Google News), Google News regions and topics |
+| **Festivals** | Automatic Diwali, Christmas and New Year themes and tones on both units, the coming dates, try one for a minute |
+| **Phone (ntfy)** | Phone notifications through ntfy, and the alert when the doorbell is offline |
+| **Camera** | Find, log in and test the camera; recording length after a press, sound in recordings, motion recording on or off |
+| **Web access & alerts** | The web app's password and address, ring alerts on this device |
+| **Outdoor unit** | Everything on the doorbell at the door : see *Outdoor unit settings* below |
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/settings_look.png" alt="Settings › Look: Editorial, Paper, Glass and Fluent previews"></td>
+<td width="50%"><img src="docs/images/settings_tone.png" alt="Settings › Bell tone: chimes, Bollywood style, festive and funny tones with play buttons"></td>
+</tr>
+<tr><td align="center"><b>Look</b></td><td align="center"><b>Bell tone</b></td></tr>
+<tr>
+<td><img src="docs/images/settings_speaker.png" alt="Settings › Speaker: volume, search, the connected speaker, two-way talk"></td>
+<td><img src="docs/images/settings_news.png" alt="Settings › News: channels, regions and topics"></td>
+</tr>
+<tr><td align="center"><b>Speaker</b></td><td align="center"><b>News</b></td></tr>
+<tr>
+<td><img src="docs/images/settings_festivals.png" alt="Settings › Festivals: automatic themes, festive tones, coming dates"></td>
+<td><img src="docs/images/settings_recording.png" alt="Settings › Camera: recording length after a press, sound in recordings, motion recording"></td>
+</tr>
+<tr><td align="center"><b>Festivals</b></td><td align="center"><b>Recording</b> (in Camera)</td></tr>
+</table>
+
+More: **[Indoor dashboard](docs/indoor.md)** · **[Phones & web](docs/phones.md)**
+
+---
+
+### 2. 🛎️ Outdoor unit display
+
+<div align="center">
+<img src="docs/images/outdoor_screens.png" alt="Three round doorbell screens: blue bell on a light theme, the bell swinging with sound waves, and a gold bell on a dark theme" width="760">
+
+<sub><b>Classic bell</b> · <b>Push button</b> (a pulsing halo invites a tap) · <b>Ringing</b> (Midnight &amp; Gold)</sub>
+</div>
+
+- 👆 **Touch-based doorbell** : a tap on the round 1.75″ AMOLED rings inside; the bell swings with pulsing sound
+  waves and a chime plays at the door so the visitor knows it rang
+- 📨 **Reliable rings** : every press is acknowledged by the Pi and resent until it is, never a double ring
+- 🎙️ **Its own microphone** : keeps the last 8 s of sound, so recordings start before the press
+- 🎨 **Themes** : *Clean & Light* or *Midnight & Gold* (true black, kind to AMOLED), six bell styles, four bell
+  colours and an optional *aurora* glow; Diwali, Christmas and New Year themes by themselves
+- 🌙 **Blank at night** : the screen turns off from **11 pm to 6 am** by default (the hours can be changed, or it can
+  stay lit); a touch lights it for 30 s without ringing, and a ring always lights it
+- 🕒 **Network clock** · 💾 settings survive restarts
+
+#### Outdoor unit settings
+
+The doorbell is configured from **Settings → Outdoor unit** on the wall or a phone : nothing needs doing at the door:
+
+| Tab | What you can change |
+|---|---|
+| **Look** | Theme (*Clean & Light*, *Midnight & Gold*), bell colour (blue, gold, silver, red), bell style (*Classic*, *Push button*, *Temple*, *Hand bell*, *Twin bells*, *Flat*), background glow |
+| **Sound** | Chime (*Ding Dong*, *Westminster*, *Triple Chime*, *Marimba*, *Church Bell*), once per press or for the whole ring, volume (quiet, normal, loud), ring duration (10 – 60 s) |
+| **Screen** | Screen off at night on or off, from and until which hour, and turn the screen on or off right now |
+| **Network** | Move the doorbell to another Wi-Fi network, or change the indoor unit's address : kept only if the doorbell reaches the Pi within 60 s, so a typo cannot strand it |
+
+<table>
+<tr>
+<td width="33%"><img src="docs/images/settings_outdoor.png" alt="Outdoor unit › Look: theme, bell colour, bell style, background glow"></td>
+<td width="33%"><img src="docs/images/settings_outdoor_sound.png" alt="Outdoor unit › Sound: chime, chime plays, volume, ring duration"></td>
+<td width="33%"><img src="docs/images/settings_outdoor_screen.png" alt="Outdoor unit › Screen: screen off at night from 11 PM until 6 AM, turn the screen on or off now"></td>
+</tr>
+<tr><td align="center"><b>Look</b></td><td align="center"><b>Sound</b></td><td align="center"><b>Screen</b></td></tr>
+</table>
+
+<img src="docs/images/outdoor_bell_page.png" alt="The doorbell's own Bell settings page with six bell thumbnails" width="240" align="right">
+
+On the doorbell itself there is a setup screen for the first start: scan for **Wi-Fi**, type the password on a
+keyboard sized for the round screen, enter the **indoor unit's address**, and pick a bell from thumbnails drawn in
+its colour. A wrong Wi-Fi password never loses the network that worked.
+
+More: **[Outdoor unit](docs/outdoor.md)**
+
+<br clear="right"/>
+
+---
+
+### 📱 On your phone
+
+The whole dashboard is also a **web app** : news, the live door with sound and full screen, the events, every
+setting : at home or from anywhere over **Tailscale**. **Ring alerts** arrive even with the page closed, with the
+visitor's picture and a **Stop the bell** button (Android and iPhone), plus **ntfy** notifications and an alert when
+the doorbell goes offline. More: **[Phones & web](docs/phones.md)**
+
+### 🧭 How a ring works
 
 ```mermaid
 sequenceDiagram
@@ -114,138 +307,20 @@ sequenceDiagram
 
 ---
 
-## 🧠 AI recording — only what matters
-
-The Pi carries a **[Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/)**: a **Hailo-8L** neural-network
-accelerator on the Pi 5's PCIe connector. It runs **YOLOv8s** on the door camera in about **33 ms a frame** —
-fast enough to watch the door continuously while the Pi's own CPU stays free for everything else.
-
-| Hailo-8L | |
-|---|---|
-| **Performance** | 13 TOPS, on an M.2 module attached over PCIe |
-| **Model used** | YOLOv8s, 640 × 640, trained on COCO's 80 everyday objects — from Raspberry Pi's `hailo-models` |
-| **Speed here** | ~33 ms a frame (~30 fps), detection and filtering on the chip |
-| **Also ready on the chip** | pose estimation, instance segmentation, face detection, image classification — models already installed |
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as 📷 Camera
-    participant P as 🍓 Raspberry Pi
-    participant H as 🧠 Hailo-8L
-    participant O as 🛎️ Doorbell
-    loop always, 5 frames a second
-        C->>P: small video stream
-        P->>H: frame
-        H-->>P: people · animals · vehicles, with boxes
-        Note over P: follow each one between frames:<br/>did it actually move?
-    end
-    Note over P: 🚶 a person walks in
-    P->>O: listen {pre_ms: 7000}
-    O-)P: its sound, from 7 s back
-    Note over P: cut the clip from the last 90 s kept in RAM:<br/>5 s before → 55 s after, with the doorbell's sound
-    Note over P: Events: "Motion · Person"
-```
-
-**What starts a recording — and what doesn't:**
-
-| Seen by the camera | Recorded? |
-|---|---|
-| 🚶 A person walking up the path | ✅ yes |
-| 🐕 A dog or cat crossing the drive | ✅ yes |
-| 🚗 A car or motorbike driving in | ✅ yes |
-| 🍃 Leaves and branches moving in the wind | ❌ never — not a person, animal or vehicle |
-| 🦟 Insects on the lens, rain, shadows, headlight sweeps | ❌ never |
-| 🛵 A car or scooter parked in view | ❌ no — present, but not moving |
-
-Every recording — ring or motion — keeps the **doorbell's own microphone**, lined up with the picture sample by
-sample. The **Events** page labels each one *Bell pressed* or *Motion · Person, Car*, with **All / Bell / Motion**
-filters. When the SD card runs low, the **oldest motion clips make room first**; rings are kept longest.
-Details: **[Recordings & detection](docs/recordings.md)**.
-
----
-
-## 🛎️ Outdoor unit
-
-<div align="center">
-<img src="docs/images/outdoor_screens.png" alt="Three round doorbell screens: blue bell on a light theme, the bell swinging with sound waves, and a gold bell on a dark theme" width="760">
-
-<sub><b>Classic bell</b> · <b>Push button</b> (a pulsing halo invites a tap) · <b>Ringing</b> (Midnight &amp; Gold)</sub>
-</div>
-
-- 🔔 **Tap to ring** — the bell swings with pulsing sound waves, drawn at full resolution on the 466 × 466 AMOLED
-- 🛎️ **Six bell styles** — *Classic*, *Push button*, *Temple*, *Hand bell*, *Twin bells*, *Flat* — in four colours
-- 🎨 **Two themes** — *Clean & Light* or *Midnight & Gold* (true black), with a soft **aurora glow** behind the bell
-- 🔊 **A chime at the door** — five chimes, once or for the whole ring, three volumes
-- 🎙️ **Its microphone** — keeps the last 8 s of sound, so recordings start before the press
-- 🌙 **Screen off at night** — dark from 11 pm to 6 am by default; a touch or a ring lights it
-- 🕒 **Network clock** · 📨 **reliable rings** (acknowledged and resent) · 💾 **settings survive restarts**
-- 🎛️ **Configured from the wall** — **Settings → Outdoor unit** on the dashboard changes the theme, bell style and
-  colour, aurora, chime, volume, ring duration, night hours, and even moves the doorbell to another Wi-Fi network
-  (it keeps the new one only if it reaches the Pi within 60 s, so a typo cannot strand it)
-
-More: **[Outdoor unit](docs/outdoor.md)** · hardware: **[Waveshare T5-E1 Touch AMOLED 1.75″](docs/hardware.md)**
-
----
-
-## 🖥️ Indoor dashboard
-
-<table>
-<tr>
-<td width="50%"><img src="Indoor/assets/looks/editorial.png" alt="Editorial look"></td>
-<td width="50%"><img src="Indoor/assets/looks/glass.png" alt="Glass look"></td>
-</tr>
-<tr>
-<td align="center"><b>Editorial</b> — the story full-bleed beside a quiet black panel</td>
-<td align="center"><b>Glass</b> — frosted widgets, like a phone's home screen</td>
-</tr>
-<tr>
-<td><img src="Indoor/assets/looks/fluent.png" alt="Fluent look"></td>
-<td><img src="Indoor/assets/looks/paper.png" alt="Paper look"></td>
-</tr>
-<tr>
-<td align="center"><b>Fluent</b> — navigation pane and cards, like a Windows app</td>
-<td align="center"><b>Paper</b> — light panel, black type, for a bright room</td>
-</tr>
-</table>
-
-- 🎨 **Drawn on the GPU** with Qt Quick — real frosted-glass blur, soft shadows, smooth motion
-- 🚪 **Front door, always first** — the camera's latest picture, refreshed every minute, and whether the doorbell is online
-- 🚨 **Visitor screen** — the camera full screen like a video call, the door's sound, a countdown and a big **STOP**
-- 📰 **News** — NDTV, Times of India, BBC, Yahoo News, Google News by region and topic, with a breaking-news ticker
-  and banner · 📈 **NIFTY 50 and SENSEX** · 🏞️ **photo slideshow** with a slow Ken Burns drift
-- 🔊 **16 ring tones** on a Bluetooth speaker — chimes, Bollywood style, festive and funny — or your own
-- 🎙️ **Voice commands** — on the Pi, with Whisper; the orb on the home screen lights up while it listens
-- 🗣️ **Talk to the visitor** (trial) — two-way audio through the doorbell
-- 🪔 **Festival themes** — Diwali sparks, Christmas snow, New Year confetti, on both units, by themselves
-- 🚀 **Starts at boot**, restarts itself if it ever stops
-
-More: **[Indoor dashboard](docs/indoor.md)**
-
----
-
-## 📱 On your phone
-
-- 💻 **The whole dashboard as a web app** — news, live door with sound, recordings with filters, every setting
-- 🔔 **Ring alerts without an app** — the visitor's picture, **Stop the bell**, a tap to see the door (Android and iPhone)
-- 📨 **ntfy notifications** · 🩺 **doorbell-offline alert** with how long it was down
-- 🌍 **From anywhere** with Tailscale; nothing exposed to the internet
-
-More: **[Phones & web](docs/phones.md)**
-
----
-
-## 🧰 What you need
+## 🧰 Hardware used
 
 | Part | Model used here | Role |
 |---|---|---|
-| Doorbell board | [Waveshare T5-E1 Touch AMOLED 1.75″](https://www.waveshare.com/t5-e1-touch-amoled-1.75.htm) | Round touch screen, mic and speaker at the door |
+| Doorbell board | [Waveshare T5-E1 Touch AMOLED 1.75″](https://www.waveshare.com/t5-e1-touch-amoled-1.75.htm) (Tuya T5, 466 × 466 round AMOLED, touch, mic, speaker) | The outdoor unit at the door |
 | Indoor computer | Raspberry Pi 5 (Raspberry Pi OS desktop) | Dashboard, MQTT broker, recorder, web app |
-| AI accelerator | [Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/) (Hailo-8L, 13 TOPS) | Person / animal / vehicle detection |
+| AI accelerator | [Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/) (Hailo-8L, 13 TOPS, M.2 over PCIe) | Person / animal / vehicle detection |
 | Display | [Waveshare 12.3″ capacitive touch display](https://www.waveshare.com/12.3inch-hdmi-lcd.htm) (HDMI + USB touch) | The wall screen |
 | Camera | TP-Link VIGI C330I (any RTSP camera works) | Live view and recordings |
-| Speaker | Any Bluetooth speaker | Chime and the door's sound |
+| Speaker | Any Bluetooth speaker (here a Philips BT100) | Chime and the door's sound |
 | Microphone | Any USB microphone (optional) | Voice commands |
+| Network | The home Wi-Fi router (2.4 GHz for the doorbell) | Connects everything; Tailscale for phones away from home |
+
+Wiring, power and network details: **[Hardware](docs/hardware.md)**.
 
 ---
 
@@ -253,7 +328,7 @@ More: **[Phones & web](docs/phones.md)**
 
 1. **Doorbell** (Windows PC): `.\setup.cmd`, then `.\build.cmd -Flash COM6`.
 2. **Raspberry Pi**: `bash smart-door-bell/Indoor/setup_pi.sh`.
-3. **Connect them**: join the doorbell to your 2.4 GHz Wi-Fi and give it the Pi's address on its setup screen —
+3. **Connect them**: join the doorbell to your 2.4 GHz Wi-Fi and give it the Pi's address on its setup screen :
    from then on it is configured from the dashboard.
 
 Step by step, with the camera, speaker, encryption and phones: **[Setup guide](docs/setup.md)**.
@@ -280,6 +355,6 @@ Built on [TuyaOpen](https://github.com/tuya/TuyaOpen) and [LVGL](https://lvgl.io
 dashboard in [PySide6 / Qt Quick](https://doc.qt.io/qtforpython-6/) ·
 detection with [Hailo](https://hailo.ai) and YOLOv8 from Raspberry Pi's `hailo-models` ·
 type: [Inter](https://rsms.me/inter/) and [EB Garamond](https://github.com/octaviopardo/EBGaramond12) ·
-landscape photos from [Unsplash](https://unsplash.com) via [Lorem Picsum](https://picsum.photos) — photographers in
+landscape photos from [Unsplash](https://unsplash.com) via [Lorem Picsum](https://picsum.photos) : photographers in
 [Indoor/assets/scenic/CREDITS.md](Indoor/assets/scenic/CREDITS.md) ·
 headlines from the channels' public RSS feeds and [Google News](https://news.google.com).
