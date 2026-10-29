@@ -1,4 +1,6 @@
-"""Events page of the dashboard: every ring, newest first, with its recording.
+"""Events page of the dashboard: every ring and every movement (a person,
+animal or vehicle, watch.py), newest first, with its recording; All / Bell /
+Motion shows one kind only.
 A tap plays the clip full screen (decoded with OpenCV, so no extra media
 packages are needed); it can be replayed or deleted. Select picks several
 events to delete; Delete all clears the list. Every delete asks for a second
@@ -6,7 +8,7 @@ tap within CONFIRM_MS instead of a dialog."""
 import datetime as dt, time
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QScroller,
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QScroller,
                                QSizePolicy, QVBoxLayout, QWidget)
 from recorder import CLIP_S, DIR
 from door_audio import play_file_audio
@@ -16,7 +18,13 @@ except ImportError:
     cv2 = None
 
 COLUMNS = 4
-KINDS = {"ring": "Rang the bell"}
+KINDS = {"ring": "Bell pressed", "motion": "Motion"}
+
+
+def title(entry):
+    """Bell pressed / Motion · Person, Car"""
+    kind = KINDS.get(entry["kind"], entry["kind"])
+    return f"{kind} · {', '.join(entry['detected'])}" if entry.get("detected") else kind
 CONFIRM_MS = 4000
 
 
@@ -48,11 +56,12 @@ class Card(QPushButton):
         if pm.isNull(): pic.setText(entry.get("note") or "No recording")
         else: pic.setPixmap(pm.scaled(pic.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         lay.addWidget(pic)
-        lines = ((KINDS.get(entry["kind"], entry["kind"]), "eventKind"), (when(entry["time"]), "eventTime"),
-                 (("▶  " + f"{entry.get('seconds', CLIP_S)} s" + (f" · from {entry['pre']:.0f} s before the press" if entry.get("pre") else " recording"))
+        cause = "press" if entry["kind"] == "ring" else "movement"
+        lines = ((title(entry), "eventKind"), (when(entry["time"]), "eventTime"),
+                 (("▶  " + f"{entry.get('seconds', CLIP_S)} s" + (f" · from {entry['pre']:.0f} s before the {cause}" if entry.get("pre") else " recording"))
                   if entry.get("video") else "No recording", "eventTime"))
         for text, obj in lines:
-            l = QLabel(text); l.setObjectName(obj); l.setAlignment(Qt.AlignCenter); lay.addWidget(l)
+            l = QLabel(text); l.setObjectName(obj); l.setAlignment(Qt.AlignCenter); l.setProperty("kind", entry["kind"]); lay.addWidget(l)
         for w in self.findChildren(QLabel): w.setAttribute(Qt.WA_TransparentForMouseEvents)
 
 
@@ -86,8 +95,8 @@ class Player(QFrame):
         self.setGeometry(parent.rect())
         root = QVBoxLayout(self); root.setContentsMargins(24, 20, 24, 20); root.setSpacing(12)
         head = QHBoxLayout()
-        title = QLabel(f"{KINDS.get(entry['kind'], entry['kind'])} · {when(entry['time'])}"); title.setObjectName("pageTitle")
-        head.addWidget(title); head.addStretch()
+        title_ = QLabel(f"{title(entry)} · {when(entry['time'])}"); title_.setObjectName("pageTitle")
+        head.addWidget(title_); head.addStretch()
         for text, slot in (("↻  Replay", self.play), ("Delete", None), ("✕  Close", self.close_player)):
             b = QPushButton(text); b.setMinimumHeight(56); b.setFixedWidth(220 if slot is None else 170); head.addWidget(b)
             b.clicked.connect(slot or (lambda _=False, b=b: confirm(b, "Tap again to delete", self.delete)))
@@ -143,8 +152,15 @@ class EventsPage(QFrame):
         b = QPushButton("‹  Back"); b.setMinimumHeight(56); b.setFixedWidth(160); b.clicked.connect(self.back.emit); head.addWidget(b)
         root.addLayout(head)
         self.filter = None  # (first date, last date, label) when only some days are shown
+        self.kind = None    # "ring" / "motion" when only one kind is shown
         row = QHBoxLayout()
-        self.note = QLabel(); self.note.setObjectName("secondary"); row.addWidget(self.note, 1)
+        self.note = QLabel(); self.note.setObjectName("secondary"); self.note.setWordWrap(True); row.addWidget(self.note, 1)
+        self.kind_btns = {}; group = QButtonGroup(self)
+        for kind, text in ((None, "All"), ("ring", "Bell"), ("motion", "Motion")):
+            b = QPushButton(text); b.setCheckable(True); b.setChecked(kind is None); b.setMinimumHeight(48); b.setFixedWidth(120)
+            b.setObjectName("choice"); group.addButton(b); row.addWidget(b); self.kind_btns[kind] = b
+            b.clicked.connect(lambda _=False, k=kind: self.set_kind(k))
+        row.addSpacing(12)
         self.all_btn = QPushButton("Show all"); self.all_btn.setMinimumHeight(48); self.all_btn.setFixedWidth(160)
         self.all_btn.clicked.connect(lambda: self.set_filter(None)); row.addWidget(self.all_btn); root.addLayout(row)
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.NoFrame)
@@ -154,19 +170,21 @@ class EventsPage(QFrame):
     def refresh(self):
         body = QWidget(); grid = QGridLayout(body); grid.setSpacing(16); grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         entries = sorted(self.rec.entries, key=lambda e: e["time"], reverse=True); self.cards = []
+        if self.kind: entries = [e for e in entries if e["kind"] == self.kind]
         if self.filter:
             first, last, label = self.filter
             entries = [e for e in entries if first <= dt.date.fromtimestamp(e["time"]) <= last]
             self.note.setText(f"Events from {label}: {len(entries)}")
         else:
-            self.note.setText("Every ring with its recording (length: Settings › Camera), saved on the Pi's SD card "
-                              "for 30 days. Tap one to play it.")
+            self.note.setText("Bell presses, and people, animals or vehicles moving in view, each with its recording; kept "
+                              "for 30 days. When the SD card fills up, the oldest motion clips make room first. Tap one to play it.")
         self.all_btn.setVisible(self.filter is not None)
         for i, e in enumerate(entries):
             c = Card(e); c.setCheckable(self.selecting); c.clicked.connect(lambda _=False, c=c: self.tap(c))
             grid.addWidget(c, i // COLUMNS, i % COLUMNS); self.cards.append(c)
         if not entries:
-            l = QLabel(f"No rings {'on those days' if self.filter else 'yet. Each ring appears here with its recording'}.")
+            what = {"ring": "bell presses", "motion": "movements"}.get(self.kind, "events")
+            l = QLabel(f"No {what} {'on those days' if self.filter else 'yet. Each one appears here with its recording'}.")
             l.setObjectName("secondary"); grid.addWidget(l, 0, 0)
         self.scroll.setWidget(body); self.update_buttons()
 
@@ -197,6 +215,9 @@ class EventsPage(QFrame):
 
     def remove(self, entry):
         self.rec.delete(entry); self.refresh()
+
+    def set_kind(self, kind):
+        self.kind = kind; self.selecting = False; self.refresh()
 
     def set_filter(self, days):
         """Only events between two dates (inclusive): (first, last, label), or None for all."""

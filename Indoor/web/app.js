@@ -299,7 +299,9 @@ document.addEventListener("visibilitychange", () => {  // no camera stream in th
 });
 
 // ---------- recordings ----------
-let evFilter = "all", selecting = false, selected = new Set(), current = null;
+let evFilter = "all", evKind = "all", selecting = false, selected = new Set(), current = null;
+// Bell pressed / Motion · Person, Car
+const evTitle = (e) => (e.kind === "motion" ? "Motion" : "Bell pressed") + (e.detected && e.detected.length ? " · " + e.detected.join(", ") : "");
 function when(t) {
   const d = new Date(t * 1000), today = new Date(), y = new Date(Date.now() - 86400000);
   const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -309,20 +311,21 @@ function when(t) {
 }
 function shown() {
   const start = new Date(); start.setHours(0, 0, 0, 0); const t0 = start / 1000;
-  return (P.events || []).filter((e) => evFilter === "all" || (evFilter === "today" && e.time >= t0) ||
+  return (P.events || []).filter((e) => evKind === "all" || e.kind === evKind).filter((e) => evFilter === "all" || (evFilter === "today" && e.time >= t0) ||
     (evFilter === "yesterday" && e.time >= t0 - 86400 && e.time < t0) || (evFilter === "week" && e.time >= t0 - 6 * 86400));
 }
 function renderEvents() {
   document.querySelectorAll("#ev-filter button").forEach((b) => b.classList.toggle("on", b.dataset.f === evFilter));
+  document.querySelectorAll("#ev-kind button").forEach((b) => b.classList.toggle("on", b.dataset.k === evKind));
   const list = shown(), box = $("events");
   box.classList.toggle("selecting", selecting);
   $("ev-select").textContent = selecting ? "Cancel" : "Select";
   $("ev-delete").classList.toggle("hidden", !selecting);
   $("ev-delete").textContent = selected.size ? `Delete ${selected.size}` : "Delete all shown";
-  if (!list.length) { box.innerHTML = '<p class="muted">No rings here.</p>'; return; }
+  if (!list.length) { box.innerHTML = `<p class="muted">No ${evKind === "ring" ? "bell presses" : evKind === "motion" ? "movements" : "events"} here.</p>`; return; }
   box.innerHTML = list.map((e) => `<button class="event${selected.has(e.time) ? " sel" : ""}" data-t="${e.time}">
     <div class="thumb" ${e.thumb ? `style="background-image:url('/media/${encodeURI(e.thumb)}')"` : ""}>${e.thumb ? "" : esc(e.note || "No recording")}</div>
-    <div class="meta"><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span></div><span class="tick">✓</span></button>`).join("");
+    <div class="meta"><span class="kind ${e.kind === "motion" ? "motion" : "ring"}">${esc(evTitle(e))}</span><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span></div><span class="tick">✓</span></button>`).join("");
 }
 $("events").addEventListener("click", (e) => {
   const b = e.target.closest("[data-t]"); if (!b) return;
@@ -330,6 +333,7 @@ $("events").addEventListener("click", (e) => {
   if (selecting) { selected.has(t) ? selected.delete(t) : selected.add(t); renderEvents(); } else if (ev) openEvent(ev);
 });
 document.querySelectorAll("#ev-filter button").forEach((b) => b.onclick = () => { evFilter = b.dataset.f; selected.clear(); renderEvents(); });
+document.querySelectorAll("#ev-kind button").forEach((b) => b.onclick = () => { evKind = b.dataset.k; selected.clear(); renderEvents(); });
 $("ev-select").onclick = () => { selecting = !selecting; selected.clear(); renderEvents(); };
 $("ev-delete").onclick = async () => {
   const times = selected.size ? [...selected] : shown().map((e) => e.time);
@@ -337,7 +341,7 @@ $("ev-delete").onclick = async () => {
   await act("delete", { times }); selecting = false; selected.clear(); renderEvents();
 };
 function openEvent(e) {
-  current = e; $("player-title").textContent = "Rang the bell"; $("player-sub").textContent = when(e.time);
+  current = e; $("player-title").textContent = evTitle(e); $("player-sub").textContent = when(e.time);
   const v = $("video");
   if (e.video) { v.classList.remove("hidden"); v.src = "/media/" + encodeURI(e.video); } else { v.classList.add("hidden"); v.removeAttribute("src"); }
   $("player-note").textContent = e.video ? "" : e.note || "No recording";
@@ -537,7 +541,8 @@ const RENDER = {
       <div class="row wrap"><span class="step">${[-5, -1].map((d) => `<button data-rec="${d}">−${d === -5 ? 5 : ""}</button>`).join("")}
         <b>${recLength()[0]} s</b>${[1, 5].map((d) => `<button data-rec="${d}">+${d === 5 ? 5 : ""}</button>`).join("")}</span>
         <span class="muted">1 – ${recLength()[1]} s (the ring's length), plus ${P.settings.record.pre} s before the press</span></div>
-      ${choices("SOUND IN RECORDINGS (the doorbell's microphone)", "record_audio", [[true, "On"], [false, "Off: picture only"]])}`;
+      ${choices("SOUND IN RECORDINGS (the doorbell's microphone)", "record_audio", [[true, "On"], [false, "Off: picture only"]])}
+      ${choices("MOTION RECORDING (people, animals, vehicles that move: 5 s before to 55 s after)", "motion_record", [[true, "On"], [false, "Off"]])}`;
   },
   web() {
     const w = P.settings.web;

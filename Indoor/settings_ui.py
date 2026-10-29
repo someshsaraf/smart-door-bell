@@ -274,6 +274,12 @@ class CameraPanel(QWidget):
             b = button(text, "choice", True, 52); b.setChecked(settings.get("record_audio", True) == value); group.addButton(b); row.addWidget(b)
             b.clicked.connect(lambda _=False, v=value: self.set_audio(v)); self.audio_btns[value] = b
         left.addLayout(row)
+        left.addWidget(label("MOTION RECORDING (people, animals, vehicles that move: 5 s before to 55 s after)", "section"))
+        row = QHBoxLayout(); group = QButtonGroup(self); self.motion_btns = {}
+        for value, text in ((True, "On"), (False, "Off")):
+            b = button(text, "choice", True, 52); b.setChecked(settings.get("motion_record", True) == value); group.addButton(b); row.addWidget(b)
+            b.clicked.connect(lambda _=False, v=value: self.set_motion(v)); self.motion_btns[value] = b
+        left.addLayout(row)
         row = QHBoxLayout()
         t = button("Test connection", h=64); t.clicked.connect(self.test); row.addWidget(t)
         s = button("Save", "choice", h=64); s.clicked.connect(self.save); row.addWidget(s)
@@ -347,7 +353,11 @@ class CameraPanel(QWidget):
     def sync(self):
         self.show_length()
         self.audio_btns[bool(self.settings.get("record_audio", True))].setChecked(True)
+        self.motion_btns[bool(self.settings.get("motion_record", True))].setChecked(True)
     on_audio = None  # set by the window: the recording buffer starts again with or without sound
+    def set_motion(self, on):
+        self.settings["motion_record"] = on; self.save_settings()
+        self.msg.setText("✓ Movements are recorded" if on else "✓ Only bell presses are recorded from now on")
     def set_audio(self, on):
         self.settings["record_audio"] = on; self.save_settings()
         if self.on_audio: self.on_audio()

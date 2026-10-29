@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 RED, GREEN = QColor("#e5484d"), QColor("#2fa36b")
+BOX = QColor("#ff3b30")  # what the detector found
 
 
 class RingPage(QWidget):
@@ -22,6 +23,7 @@ class RingPage(QWidget):
         self.intercom_enabled = intercom_enabled  # a function: the trial intercom is switched on
         self.ringing = True; self.remaining = 0; self.total = 1; self.rang_at = time.time()
         self.subtitle = "Bell is playing"; self.note = ""; self.frame = None; self.backdrop = None; self.frames = 0
+        self.boxes = []; self.boxes_at = 0.0
         self.call_note = QLabel(self); self.call_note.hide()  # holds the call's status text (read by the window)
         self.stop_btn = QPushButton("■  STOP", self); self.stop_btn.setObjectName("ringStop"); self.stop_btn.clicked.connect(self.stop.emit)
         self.talk_btn = QPushButton("☎  Talk", self); self.talk_btn.setObjectName("ringTalk"); self.talk_btn.clicked.connect(self.talk.emit)
@@ -62,8 +64,12 @@ class RingPage(QWidget):
             self.backdrop = QPixmap.fromImage(tiny.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         self.frames += 1; self.note = ""; self.update()
 
+    def set_boxes(self, found):
+        """What the detector saw (detect.py): drawn as red boxes over the picture until it looks again."""
+        self.boxes = found; self.boxes_at = time.monotonic(); self.update()
+
     def clear_video(self, note):
-        self.frame = self.backdrop = None; self.note = note; self.update()
+        self.frame = self.backdrop = None; self.boxes = []; self.note = note; self.update()
 
     def set_note(self, text):
         self.note = text; self.update()
@@ -98,7 +104,10 @@ class RingPage(QWidget):
         if self.frame is not None:
             if self.backdrop is not None:
                 p.drawPixmap(0, 0, self.backdrop); p.fillRect(QRectF(0, 0, w, h), QColor(0, 0, 0, 150))
-            p.drawPixmap((w - self.frame.width()) // 2, (h - self.frame.height()) // 2, self.frame)
+            fx, fy = (w - self.frame.width()) // 2, (h - self.frame.height()) // 2
+            p.drawPixmap(fx, fy, self.frame)
+            if self.boxes and t - self.boxes_at < 1.0:  # a second old at most: no boxes left behind
+                self._paint_boxes(p, QRectF(fx, fy, self.frame.width(), self.frame.height()))
         else:
             g = QRadialGradient(QPointF(w / 2, h / 2), w * 0.7); g.setColorAt(0, QColor("#1a2333")); g.setColorAt(1, QColor("#05080e"))
             p.fillRect(QRectF(0, 0, w, h), g)
@@ -117,6 +126,18 @@ class RingPage(QWidget):
         self._paint_message(p, w, h)
         if self.ringing: self._paint_countdown(p, t)
         p.end()
+
+    def _paint_boxes(self, p, pic):
+        """A red box round each person, animal or vehicle, with what it is and how sure the detector is."""
+        p.setFont(self._font(18, True)); fm = QFontMetrics(p.font())
+        for d in self.boxes:
+            x1, y1, x2, y2 = d["box"]
+            r = QRectF(pic.x() + x1 * pic.width(), pic.y() + y1 * pic.height(), (x2 - x1) * pic.width(), (y2 - y1) * pic.height())
+            p.setBrush(Qt.NoBrush); p.setPen(QPen(BOX, 4)); p.drawRoundedRect(r, 8, 8)
+            text = f"{d['label']} {round(d['score'] * 100)}%"
+            tag = QRectF(r.x(), max(pic.y(), r.y() - 34), fm.horizontalAdvance(text) + 22, 30)
+            p.setPen(Qt.NoPen); p.setBrush(BOX); p.drawRoundedRect(tag, 6, 6)
+            p.setPen(QColor("#ffffff")); p.drawText(tag, Qt.AlignCenter, text)
 
     def _paint_top(self, p, w, t):
         pulse = 0.5 + 0.5 * math.sin(t * 5)

@@ -1,6 +1,6 @@
 # Indoor unit — Raspberry Pi 5 doorbell dashboard
 
-Full-screen PySide6 dashboard for a 10-inch HDMI display. When the outdoor Tuya
+Full-screen PySide6 dashboard (home screen in Qt Quick) for a 12.3-inch HDMI touch display. When the outdoor Tuya
 doorbell is pressed it receives an MQTT start command, plays the bell sound on
 the paired Bluetooth speaker and shows the VIGI camera feed with a STOP button.
 

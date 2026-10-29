@@ -44,6 +44,8 @@ from notify import Notifier
 import camera_cfg
 from recorder import Recorder, CLIP_S, PRE_S
 from door_audio import DoorAudio, LivePlayer, PORT as LISTEN_PORT
+from detect import Detector
+from watch import Watcher
 from events_ui import EventsPage
 from assistant import Assistant
 
@@ -127,11 +129,12 @@ class Audio:
 class Camera(QThread):
     """Reads the VIGI RTSP stream while a ring is active and hands frames to the UI.
     Only the newest frame is delivered; if the UI is busy, frames are dropped
-    rather than queued, so the picture never lags behind live."""
+    rather than queued, so the picture never lags behind live. Every frame is
+    also offered to the detector (it keeps only the newest)."""
     frame = Signal(QImage)
     state = Signal(str)
-    def __init__(self, url):
-        super().__init__(); self.url = url; self.idle = threading.Event(); self.idle.set()
+    def __init__(self, url, detector=None):
+        super().__init__(); self.url = url; self.detector = detector; self.idle = threading.Event(); self.idle.set()
     def run(self):
         while not self.isInterruptionRequested():
             self.state.emit("Connecting to camera…")
@@ -147,6 +150,7 @@ class Camera(QThread):
             while not self.isInterruptionRequested():
                 ok, img = cap.read()
                 if not ok: self.state.emit("Camera stream lost · reconnecting"); break
+                if self.detector: self.detector.offer(img)
                 if not self.idle.is_set(): continue
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB); h, w, _ = rgb.shape
                 self.idle.clear(); self.frame.emit(QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy())
@@ -181,6 +185,10 @@ class Window(QWidget):
         self.settings.speaker.test_cb=lambda: self.preview(self.audio.tone())
         self.settings.webaccess.changed.connect(self.apply_web_access); QTimer.singleShot(0, self.apply_web_access)
         # the doorbell's microphone: recorded with the camera's picture, heard while the camera view is open
+        # people, animals and vehicles (on the Hailo): boxes in the Front door view, and motion recording
+        self.detector=Detector(); self.detector.found.connect(lambda found: self.stack.currentWidget() is self.ring and self.ring.set_boxes(found))
+        self.watcher=Watcher(self.detector, lambda: camera_cfg.url(which="sub") or camera_cfg.url(), lambda: self.camera is not None)
+        self.watcher.moved.connect(self.on_motion); self.motion_until=0.0; self.motion_seen=[]
         self.door_audio=DoorAudio(); self.door_live=LivePlayer(self.door_audio); self.listen_until=0.0; self.listen_sent=0.0
         self.recorder=Recorder(lambda: camera_cfg.url() or CFG.get("camera",{}).get("rtsp_url",""),
                                lambda: SETTINGS.get("record_audio", True), self.door_audio)
@@ -236,6 +244,15 @@ class Window(QWidget):
         self.check_festival()
         self.webapp=WebApp(self, SETTINGS, save_settings, TONES)  # the dashboard in browsers; last: it uses everything above
     def cfg_camera_url(self): return CFG.get("camera",{}).get("rtsp_url","")
+    def on_motion(self, labels):
+        """A person, animal or vehicle moved in view (watch.py): recorded from 5 s before to 55 s after."""
+        now=time.time()
+        if now<self.motion_until:  # already recording: note what else came by
+            self.motion_seen.extend(l for l in labels if l not in self.motion_seen); return
+        if not SETTINGS.get("motion_record", True) or self.active: return  # a ring records itself
+        self.motion_seen=list(labels); self.motion_until=now+recorder_mod.MOTION_S
+        self.recorder.record("motion", recorder_mod.MOTION_S, recorder_mod.MOTION_PRE_S, self.motion_seen)
+        self.home.add_event("Motion: "+", ".join(labels))
     def show_visits(self):
         """Rings today and the last visitor's picture, for the home screen."""
         rings=[e for e in self.recorder.entries if e.get("kind")=="ring"]
@@ -428,7 +445,7 @@ class Window(QWidget):
         if not url: self.ring.clear_video("Camera not set up · Settings › Camera"); return
         if cv2 is None: self.ring.clear_video("OpenCV missing · sudo apt install python3-opencv"); return
         self.ring.clear_video("Connecting to camera…")
-        self.camera=Camera(url); self.camera.frame.connect(self.on_frame); self.camera.state.connect(self.ring.set_note); self.camera.start()
+        self.camera=Camera(url, self.detector); self.camera.frame.connect(self.on_frame); self.camera.state.connect(self.ring.set_note); self.camera.start()
     def on_frame(self, img):
         self.ring.show_frame(img); self.webapp.frame(img)
         if self.camera: self.camera.idle.set()
@@ -480,7 +497,7 @@ class Window(QWidget):
     @staticmethod
     def fmt(s): return f"{s//60:02d}:{s%60:02d}"
     def closeEvent(self,event):
-        self.door_live.stop(); self.web.stop(); self.markets.stop(); self.recorder.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
+        self.door_live.stop(); self.web.stop(); self.markets.stop(); self.recorder.stop(); self.watcher.stop(); self.intercom.stop(); self.audio.stop(); self.stop_camera(); self.mqtt.close(); self.bt.request("quit"); self.news.stop(); event.accept()
 
 def fmt_span(seconds):
     """3 h 20 min, 12 min, 1 day 4 h"""
@@ -542,7 +559,8 @@ STYLE = Template("""
     QLabel#lookName {font-size:20px;font-weight:700;}
     QLabel#lookAbout {font-size:14px;color:$text2;}
     QLabel#eventPic {background:#000;border-radius:12px;color:$muted;}
-    QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;}
+    QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;color:#ff9f0a;}
+    QLabel#eventKind[kind="motion"] {color:#64d2ff;}
     QLabel#eventTime {font-size:14px;color:$muted;background:transparent;}
     QFrame#player {background:$bg;}
     QLabel#webUrl {font-size:24px;font-weight:700;color:$count;}

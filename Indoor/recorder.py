@@ -1,11 +1,12 @@
-"""Records a clip of the camera when the bell rings onto the Pi's SD card under
-recordings/<date>/, with a thumbnail, listed in recordings/index.json.
-
-A clip holds PRE_S seconds from before the press plus the length chosen under
-Settings > Camera (settings.json "record_seconds", CLIP_S by default, at most
-the ring's length) after it, picture and sound alike.
-That is possible because Buffer keeps the last minute of the camera all the
-time: ffmpeg copies the camera's own H.264 stream (no re-encoding: full
+"""Records clips of the camera onto the Pi's SD card under recordings/<date>/,
+with a thumbnail, listed in recordings/index.json:
+- "ring": when the bell rings, PRE_S seconds from before the press plus the
+  length chosen under Settings > Camera (settings.json "record_seconds",
+  CLIP_S by default, at most the ring's length) after it;
+- "motion": when a person, animal or vehicle moves in view (watch.py),
+  MOTION_PRE_S before it and MOTION_S after it, with what was seen.
+That is possible because Buffer keeps the last minute and a half of the camera
+all the time: ffmpeg copies the camera's own H.264 stream (no re-encoding: full
 quality, ~1 % CPU) into short MPEG-TS segments in RAM (/dev/shm, so the SD
 card is not worn by constant writing). On a press the segments around it are
 joined and cut into an MP4. Segments start at the camera's key frames (every
@@ -18,8 +19,9 @@ Camera can switch sound recording off.
 
 Without a running buffer (camera offline, just started) the clip is recorded
 straight from the camera instead, from the next key frame on. Rings are listed
-even when nothing could be recorded. Old clips go after KEEP_DAYS, or sooner
-when they take more than MAX_GB."""
+even when nothing could be recorded. Old clips go after KEEP_DAYS; when the SD
+card runs short of space (under MIN_FREE_GB free), the oldest motion clips go
+first, and rings only when no motion clips are left."""
 import json, os, shutil, signal, subprocess, threading, time
 import numpy as np
 from pathlib import Path
@@ -31,9 +33,10 @@ CLIP_S = 5  # default length after the press; any whole number of seconds up to 
 RING_S = 30  # the doorbell's ring length until it reports its own (Settings > Outdoor unit)
 PRE_S = 3   # before the press, from the buffer
 LAG_S = 0.5  # the camera's picture reaches the Pi about this much behind real time
-SEGMENTS = 30  # kept in RAM: ~1 minute at the camera's 2 s key frame interval
+MOTION_PRE_S, MOTION_S = 5, 55  # a motion clip: before and after the movement
+SEGMENTS = 45  # kept in RAM: ~1.5 minutes at the camera's 2 s key frame interval (a motion clip needs a minute)
 KEEP_DAYS = 30
-MAX_GB = 10
+MIN_FREE_GB = 2  # the SD card is "full" below this
 MARGIN_S = 1.5  # doorbell audio looked at around a clip, for lining it up with the picture
 AUDIO = ["-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "48k"]  # the camera's G.711: AAC, playable everywhere
 
@@ -119,7 +122,7 @@ class Buffer:
 
 
 class Recorder(QObject):
-    saved = Signal(dict)  # a new entry: {"time", "kind", "video", "thumb", "note", "seconds", "pre"}
+    saved = Signal(dict)  # a new entry: {"time", "kind", "video", "thumb", "note", "seconds", "pre", "detected"}
 
     def __init__(self, url_fn, audio_fn=lambda: True, door=None):
         super().__init__(); self.lock = threading.Lock(); self.url_fn = url_fn; self.audio_fn = audio_fn; self.door = door
@@ -129,11 +132,12 @@ class Recorder(QObject):
         self.buffer = Buffer(url_fn, audio_fn)
         threading.Thread(target=self.prune, daemon=True).start()
 
-    def record(self, kind="ring", seconds=CLIP_S):
-        """Saves a clip around now in the background (also logs the event when there is no camera)."""
-        threading.Thread(target=self._record, args=(kind, time.time(), int(seconds)), daemon=True).start()
+    def record(self, kind="ring", seconds=CLIP_S, pre=PRE_S, detected=None):
+        """Saves a clip around now in the background (also logs the event when there is no camera).
+        `detected`: a list of what was seen, which may still grow while the clip records."""
+        threading.Thread(target=self._record, args=(kind, time.time(), int(seconds), pre, detected), daemon=True).start()
 
-    def _record(self, kind, t, seconds):
+    def _record(self, kind, t, seconds, pre, detected):
         lt = time.localtime(t); day = DIR / time.strftime("%Y-%m-%d", lt); day.mkdir(parents=True, exist_ok=True)
         stem = time.strftime("%H%M%S", lt) + "_" + kind
         video, thumb = day / f"{stem}.mp4", day / f"{stem}.jpg"
@@ -143,10 +147,10 @@ class Recorder(QObject):
             entry["note"] = "No camera set up"
         elif not shutil.which("ffmpeg"):
             entry["note"] = "ffmpeg missing"
-        elif self.buffer.healthy() and (extra := self.buffer.cut(t - PRE_S, t + seconds, video)) is not None:
-            entry["pre"] = round(PRE_S + extra, 1); entry["seconds"] = round(entry["pre"] + seconds)
-            if self.audio_fn() and self.door:  # the clip shows Pi times t - PRE_S - extra onwards
-                try: entry["audio"] = self._door_audio(video, t - PRE_S - extra, PRE_S + extra + seconds)
+        elif self.buffer.healthy() and (extra := self.buffer.cut(t - pre, t + seconds, video)) is not None:
+            entry["pre"] = round(pre + extra, 1); entry["seconds"] = round(entry["pre"] + seconds)
+            if kind == "ring" and self.audio_fn() and self.door:  # the clip shows Pi times t - pre - extra onwards
+                try: entry["audio"] = self._door_audio(video, t - pre - extra, pre + extra + seconds)
                 except Exception as e: print("Doorbell audio not added:", e, flush=True)
         else:
             self._direct(url, seconds, video, entry)
@@ -155,6 +159,7 @@ class Recorder(QObject):
             subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-ss", str(entry["pre"] + 0.5), "-i", str(video),
                             "-frames:v", "1", "-vf", "scale=480:-2", str(thumb)], capture_output=True, timeout=20)  # the press
             if thumb.exists(): entry["thumb"] = thumb.relative_to(DIR).as_posix()
+        if detected is not None: entry["detected"] = list(detected)
         with self.lock:
             self.entries.insert(0, entry); self._write()
         self.saved.emit(entry)
@@ -222,13 +227,16 @@ class Recorder(QObject):
         tmp.replace(self.index)
 
     def prune(self):
-        """Drops clips older than KEEP_DAYS, then the oldest while over MAX_GB."""
+        """Drops clips older than KEEP_DAYS; then, while the SD card has under MIN_FREE_GB free,
+        the oldest motion clip, and only when none is left the oldest ring."""
         cutoff = time.time() - KEEP_DAYS * 86400
         with self.lock: entries = sorted(self.entries, key=lambda e: e["time"])
-        size = sum((DIR / e["video"]).stat().st_size for e in entries if e.get("video") and (DIR / e["video"]).exists())
+        for e in [e for e in entries if e["time"] < cutoff]: self.delete(e)
+        with self.lock: entries = sorted(self.entries, key=lambda e: (e.get("kind") != "motion", e["time"]))
         for e in entries:
-            if e["time"] >= cutoff and size <= MAX_GB * 1e9: break
-            if e.get("video") and (DIR / e["video"]).exists(): size -= (DIR / e["video"]).stat().st_size
+            if shutil.disk_usage(DIR).free >= MIN_FREE_GB * 1e9: break
+            if not e.get("video"): continue  # nothing on the card to free
+            print(f"SD card nearly full: deleting the {e.get('kind', 'ring')} recording of {time.ctime(e['time'])}", flush=True)
             self.delete(e)
         for d in DIR.iterdir():
             if d.is_dir() and not any(d.iterdir()): d.rmdir()

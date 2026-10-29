@@ -24,7 +24,7 @@ from web import secure_url
 
 ASYNC = object()  # an action that answers later, from a worker thread
 DEFAULTS = {"look": looks.DEFAULT, "tone": "ding_dong.wav", "intercom": False, "news_channels": DEFAULT_CHANNELS, "news_regions": ["india"],
-            "news_genres": ["top"], "record_seconds": CLIP_S, "record_audio": True, "offline_alert_min": 15, "notify": False, "festival_themes": True,
+            "news_genres": ["top"], "record_seconds": CLIP_S, "record_audio": True, "motion_record": True, "offline_alert_min": 15, "notify": False, "festival_themes": True,
             "festival_tones": True, "home_view": "news"}
 OUTDOOR_KEYS = {"theme", "bell_color", "bell_style", "glow", "chime", "chime_repeat", "volume", "ring_seconds", "screen_off"}
 
@@ -88,7 +88,7 @@ class WebApp(QObject):
         self.web.publish("breaking", [{"title": i["title"], "source": i.get("source", ""), "time": i.get("time")} for i in items])
 
     def events(self):
-        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note", "audio")}
+        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note", "audio", "detected")}
                                     for e in sorted(self.w.recorder.entries, key=lambda e: -e["time"])[:200]])
 
     def on_log(self, lines):
@@ -201,7 +201,7 @@ class WebApp(QObject):
         lists = {"news_channels": (CHANNELS, DEFAULT_CHANNELS), "news_regions": (REGIONS, ["india"]), "news_genres": (GENRES, ["top"])}
         if key == "tone":
             if value not in {rel for _, _, rel in list_tones(self.tones)}: return {"ok": False, "error": "no such tone"}
-        elif key in ("intercom", "notify", "festival_themes", "festival_tones", "record_audio"): value = bool(value)
+        elif key in ("intercom", "notify", "festival_themes", "festival_tones", "record_audio", "motion_record"): value = bool(value)
         elif key in lists:
             value = [k for k in value if k in lists[key][0]] or lists[key][1]
         elif key == "offline_alert_min":
