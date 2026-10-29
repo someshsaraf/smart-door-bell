@@ -121,11 +121,10 @@ without them after flashing, set them again as in step 6. Useful log lines start
 
 ## 6 · First start on the device
 
-1. The home screen shows the bell. **Hold the screen for 5 s** to open settings.
-2. **Wi-Fi → Choose network**, pick your network, type the password.
-3. **Indoor Unit → Set address**: the Raspberry Pi's IP address (`hostname -I` on the Pi).
+1. On the doorbell's setup screen: **Wi-Fi → Choose network**, pick your network, type the password.
+2. **Indoor Unit → Set address**: the Raspberry Pi's IP address (`hostname -I` on the Pi).
    The status turns **Connected** within a few seconds.
-4. Tap the bell — the indoor dashboard rings.
+3. Tap the bell — the indoor dashboard rings. Everything else is set from the dashboard: **Settings → Outdoor unit**.
 
 ---
 

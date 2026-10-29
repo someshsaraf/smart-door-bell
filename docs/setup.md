@@ -49,9 +49,9 @@ home network, and starts the dashboard at every boot. To update later: `git pull
 
 ## 3 · Connect them
 
-On the doorbell: **hold the screen 5 s → Wi-Fi** and join your 2.4 GHz network, then **Indoor Unit → Set address**
-with the Pi's IP (`hostname -I` on the Pi). The page turns **Connected** within seconds. From then on everything can
-be changed from the dashboard's **Settings → Outdoor unit**.
+On the doorbell's setup screen, join your 2.4 GHz Wi-Fi and set the **indoor unit's address** to the Pi's IP
+(`hostname -I` on the Pi). It shows **Connected** within seconds. From then on everything is changed from the
+dashboard's **Settings → Outdoor unit** — see [configured from the wall](outdoor.md).
 
 > Reserve the Pi's address in your router (DHCP reservation) so the doorbell never loses it.
 

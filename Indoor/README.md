@@ -56,8 +56,8 @@ sudo ufw allow from 192.168.2.0/24 to any port 1883 proto tcp comment doorbell-m
 add a password file and set the same username/password in `config.json` and in
 `DOORBELL_MQTT_USER` / `DOORBELL_MQTT_PASS` in `Outdoor/src/doorbell_net.h`.
 
-Find the Pi's address with `hostname -I` and enter it on the outdoor unit:
-hold the bell screen for 5 s → Indoor Unit → Set address. Give the Pi a fixed
+Find the Pi's address with `hostname -I` and enter it on the outdoor unit's setup screen
+(Indoor Unit → Set address). Give the Pi a fixed
 address (DHCP reservation on the router) so this does not change.
 
 `mqtt.host` in `config.json` stays `127.0.0.1` when the broker runs on the Pi.

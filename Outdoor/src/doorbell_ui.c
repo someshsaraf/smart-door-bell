@@ -1323,7 +1323,7 @@ static void start_ring(void)
     is_ringing = true;
     net_publish_start(ring_seconds);
     if (ns.broker[0]) /* the indoor unit records the visitor: the microphone from 3 s before the press */
-        listen_start(ns.broker, DOORBELL_LISTEN_PORT, LISTEN_PRESS_S, true);
+        listen_start(ns.broker, DOORBELL_LISTEN_PORT, LISTEN_PRESS_S, LISTEN_PRESS_PRE_MS);
     use_chime(ring_chime());  /* a Sound page preview may have loaded another */
     sound_play(chime_repeat); /* the visitor hears that it rang */
     set_ring_animation(true);
@@ -1550,7 +1550,7 @@ static void net_poll_cb(lv_timer_t *t)
     }
     if (ns.listen_seq != prev.listen_seq) {
         if (ns.listen_on && ns.listen_host[0])
-            listen_start(ns.listen_host, ns.listen_port, ns.listen_secs, false);
+            listen_start(ns.listen_host, ns.listen_port, ns.listen_secs, ns.listen_pre_ms);
         else
             listen_stop();
     }

@@ -15,13 +15,13 @@
 #include <string.h>
 
 #define PACKET_PCM   640 /* 20 ms at 16 kHz, 16-bit mono */
-#define PRE_BYTES    (LISTEN_PRE_MS * 32)
+#define MS_BYTES     32  /* 16 kHz mono 16-bit: bytes in a millisecond */
 #define BURST        5   /* packets per 10 ms tick at most: 5x real time */
 
 static THREAD_HANDLE thread;
 static SEM_HANDLE wake;
 static volatile bool want;
-static volatile bool want_pre;
+static volatile uint32_t want_pre_ms;
 static volatile uint32_t until_ms;   /* tal_system_get_millisecond() when it ends */
 static volatile uint32_t generation; /* bumps on a start that needs a new session */
 static TUYA_IP_ADDR_T peer;
@@ -47,9 +47,10 @@ static void stream(void)
     }
     session = tal_system_get_random(0x7FFFFFFF) + 1;
     uint32_t head = sound_mic_head();
-    uint32_t pos = want_pre ? (head > PRE_BYTES ? head - PRE_BYTES : 0) : head;
+    uint32_t pre = want_pre_ms * MS_BYTES;
+    uint32_t pos = head > pre ? head - pre : 0;
     pos &= ~1u;
-    PR_NOTICE("[LISTEN] streaming to the indoor unit, session %u%s", (unsigned)session, want_pre ? " (with the last 3 s)" : "");
+    PR_NOTICE("[LISTEN] streaming to the indoor unit, session %u, from %u ms back", (unsigned)session, (unsigned)want_pre_ms);
 
     static uint8_t pkt[LISTEN_HEADER + PACKET_PCM];
     memcpy(pkt, "DBA1", 4);
@@ -57,7 +58,7 @@ static void stream(void)
     while (want && gen == generation && (int32_t)(until_ms - tal_system_get_millisecond()) > 0) {
         head = sound_mic_head();
         if (head - pos > SOUND_MIC_HISTORY - 8192) /* fell too far behind (network stall): skip ahead */
-            pos = (head - PRE_BYTES / 3) & ~1u;
+            pos = (head - 1000 * MS_BYTES) & ~1u;
         for (int n = 0; n < BURST && head - pos >= PACKET_PCM; n++) {
             if (!sound_mic_read(pos, pkt + LISTEN_HEADER, PACKET_PCM)) {
                 pos = head & ~1u; /* overwritten meanwhile */
@@ -96,7 +97,7 @@ void listen_init(void)
     tal_thread_create_and_start(&thread, NULL, NULL, listen_thread, NULL, &cfg);
 }
 
-void listen_start(const char *host, uint16_t port, uint32_t seconds, bool pre)
+void listen_start(const char *host, uint16_t port, uint32_t seconds, uint32_t pre_ms)
 {
     TUYA_IP_ADDR_T addr = tal_net_str2addr(host);
     uint16_t p = port ? port : DOORBELL_LISTEN_PORT;
@@ -107,7 +108,7 @@ void listen_start(const char *host, uint16_t port, uint32_t seconds, bool pre)
         return; /* already streaming there: just longer */
     peer = addr;
     peer_port = p;
-    want_pre = pre;
+    want_pre_ms = pre_ms > LISTEN_PRE_MAX_MS ? LISTEN_PRE_MAX_MS : pre_ms;
     generation++;
     want = true;
     tal_semaphore_post(wake);

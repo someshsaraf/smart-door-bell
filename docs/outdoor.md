@@ -39,21 +39,31 @@ Hardware: **[Waveshare T5-E1 Touch AMOLED 1.75″](hardware.md)**.
 
 <br clear="right"/>
 
-## ⚙️ Settings on the screen
+## 🎛️ Configured from the wall
 
-**Hold the screen for 5 s** (a ring traces the edge while you hold) to open the settings.
+Day to day the doorbell is set up entirely from the dashboard — **Settings → Outdoor unit**, on the wall or in the
+web app. Nothing needs doing at the door:
 
-- **Wi-Fi** — scan, pick a network and type the password on a keyboard sized for the round screen. Saved and
-  reconnected after every reboot; a wrong password never loses the network that worked
-- **Indoor unit** — the Pi's address; the page shows *Connected* once the link is up
-- **Bell, Appearance, Sound, Festivals** — everything above
+| Tab | What you can change |
+|---|---|
+| **Look** | Theme (*Clean & Light*, *Midnight & Gold*), bell style, bell colour, aurora glow |
+| **Sound** | Chime, once per press or for the whole ring, volume, ring duration (10 – 60 s) |
+| **Screen** | Screen off at night on or off, its hours, and *turn the screen on / off now* |
+| **Network** | Move the doorbell to another Wi-Fi network or change the indoor unit's address |
+
+A network change is safe: the doorbell keeps the new network only if it reaches the Pi within 60 s, otherwise it
+returns to the old one by itself. The dashboard also shows the doorbell's firmware, Wi-Fi network and address, and
+whether it is online.
+
+## ⚙️ On the doorbell
+
+- **Wi-Fi** — set up once on the doorbell's own setup screen: scan, pick the network and type the password on a
+  keyboard sized for the round screen. Saved and reconnected after every reboot; a wrong password never loses the
+  network that worked
 - **Clock** — time and date from the network (NTP), never a made-up time
 - **Screen off at night** — dark from 11 pm to 6 am by default. A touch lights it for 30 s (that touch never rings);
   a ring always lights it
-
-Every one of these can also be changed from the dashboard (**Settings → Outdoor unit**), including moving the
-doorbell to another Wi-Fi network — it keeps the new network only if it reaches the Pi within 60 s, so a mistake
-cannot strand it. Settings survive restarts (encrypted on-board storage).
+- Settings survive restarts (encrypted on-board storage)
 
 ## 🎙️ Intercom (trial)
 

@@ -251,6 +251,11 @@ class Window(QWidget):
             self.motion_seen.extend(l for l in labels if l not in self.motion_seen); return
         if not SETTINGS.get("motion_record", True) or self.active: return  # a ring records itself
         self.motion_seen=list(labels); self.motion_until=now+recorder_mod.MOTION_S
+        # the doorbell's sound too, from its history: the clip's 5 s before, and room to line it up
+        pre_ms=int((recorder_mod.MOTION_PRE_S+recorder_mod.MARGIN_S+0.5)*1000)
+        if self.mqtt.publish(T_TALK, {"command": "listen", "host": this_ip(), "port": LISTEN_PORT, "seconds": 15, "pre_ms": pre_ms}):
+            self.listen_sent=now
+        self.want_listen(recorder_mod.MOTION_S+5)  # kept going while the clip records
         self.recorder.record("motion", recorder_mod.MOTION_S, recorder_mod.MOTION_PRE_S, self.motion_seen)
         self.home.add_event("Motion: "+", ".join(labels))
     def show_visits(self):

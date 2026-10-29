@@ -74,9 +74,11 @@ Raspberry Pi OS (desktop) on the SD card; recordings are stored there too.
 
 ### Raspberry Pi AI Kit — Hailo-8L
 
-An M.2 AI accelerator on the Pi 5's PCIe connector. It runs **YOLOv8s** (from Raspberry Pi's `hailo-models` package)
-on the camera's picture in about **33 ms a frame**, so the Pi can watch the door all the time for people, animals
-and vehicles while its CPU stays free. Used for the red boxes in the Front door view and for motion recording —
+A **13 TOPS** neural-network accelerator on an M.2 module, attached to the Pi 5's PCIe connector
+([Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/)). It runs **YOLOv8s** (640 × 640, COCO's 80
+objects, from Raspberry Pi's `hailo-models` package) on the camera's picture in about **33 ms a frame**, with
+non-maximum suppression on the chip, so the Pi can watch the door all the time for people, animals and vehicles
+while its CPU stays free. Models for pose estimation, segmentation and face detection come installed too. Used for the red boxes in the Front door view and for motion recording —
 see **[Recordings & detection](recordings.md)**.
 
 ### Waveshare 12.3″ capacitive touch display

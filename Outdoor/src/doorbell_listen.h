@@ -3,8 +3,8 @@
  * a ring and for listening while the camera view is open there.
  *
  * The microphone always fills a few seconds of history (doorbell_sound.c), so
- * a press can send the moments before it too: the indoor unit's video clips
- * start 3 s before the press as well. Audio goes as UDP packets to
+ * a start can send the moments before it too: the indoor unit's video clips
+ * start before the press (or the movement the camera saw) as well. Audio goes as UDP packets to
  * DOORBELL_LISTEN_PORT, each one LISTEN_HEADER bytes then 20 ms of 16 kHz mono
  * 16-bit PCM:
  *     "DBA1"   magic
@@ -19,14 +19,16 @@
 
 #define DOORBELL_LISTEN_PORT 5006
 #define LISTEN_HEADER        12
-#define LISTEN_PRE_MS        3000  /* sent from before the start when asked to (a press) */
+#define LISTEN_PRESS_PRE_MS  3000  /* a press sends this much from before it */
+#define LISTEN_PRE_MAX_MS    7000  /* most a request may ask for (the history holds ~8 s) */
 #define LISTEN_PRESS_S       20    /* a press streams this long; the indoor unit extends it while it needs more */
 #define LISTEN_MAX_S         120   /* longest a single request may ask for */
 
 /* Call once after sound_init(). */
 void listen_init(void);
-/* Streams to `host` (IPv4) for `seconds` from now; `pre` also sends the last LISTEN_PRE_MS first.
- * While running, a new start for the same host only extends the time (and never resends history). */
-void listen_start(const char *host, uint16_t port, uint32_t seconds, bool pre);
+/* Streams to `host` (IPv4) for `seconds` from now, beginning `pre_ms` back in the history (0: from now;
+ * at most LISTEN_PRE_MAX_MS). While running, a new start for the same host only extends the time
+ * (and never resends history). */
+void listen_start(const char *host, uint16_t port, uint32_t seconds, uint32_t pre_ms);
 void listen_stop(void);
 bool listen_active(void);

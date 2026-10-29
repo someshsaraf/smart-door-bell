@@ -4,7 +4,8 @@ with a thumbnail, listed in recordings/index.json:
   length chosen under Settings > Camera (settings.json "record_seconds",
   CLIP_S by default, at most the ring's length) after it;
 - "motion": when a person, animal or vehicle moves in view (watch.py),
-  MOTION_PRE_S before it and MOTION_S after it, with what was seen.
+  MOTION_PRE_S before it and MOTION_S after it, with what was seen (the
+  doorbell is asked for its sound from before the movement as well).
 That is possible because Buffer keeps the last minute and a half of the camera
 all the time: ffmpeg copies the camera's own H.264 stream (no re-encoding: full
 quality, ~1 % CPU) into short MPEG-TS segments in RAM (/dev/shm, so the SD
@@ -149,7 +150,7 @@ class Recorder(QObject):
             entry["note"] = "ffmpeg missing"
         elif self.buffer.healthy() and (extra := self.buffer.cut(t - pre, t + seconds, video)) is not None:
             entry["pre"] = round(pre + extra, 1); entry["seconds"] = round(entry["pre"] + seconds)
-            if kind == "ring" and self.audio_fn() and self.door:  # the clip shows Pi times t - pre - extra onwards
+            if self.audio_fn() and self.door:  # the clip shows Pi times t - pre - extra onwards
                 try: entry["audio"] = self._door_audio(video, t - pre - extra, pre + extra + seconds)
                 except Exception as e: print("Doorbell audio not added:", e, flush=True)
         else:

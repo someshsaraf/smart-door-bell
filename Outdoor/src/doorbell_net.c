@@ -891,8 +891,8 @@ static void handle_festival(const char *json)
 }
 
 /* {"command":"start","host":"192.168.1.102","port":5004} or {"command":"end"}: an intercom call;
- * {"command":"listen","host":"192.168.1.102","port":5006,"seconds":20} or {"command":"listen_end"}:
- * the microphone only, one way (doorbell_listen.h) */
+ * {"command":"listen","host":"192.168.1.102","port":5006,"seconds":20,"pre_ms":7000} or {"command":"listen_end"}:
+ * the microphone only, one way, optionally from before the request (doorbell_listen.h) */
 static void handle_talk(const char *json)
 {
     cJSON *j = cJSON_Parse(json);
@@ -907,6 +907,8 @@ static void handle_talk(const char *json)
         snprintf(st.listen_host, sizeof(st.listen_host), "%s", cJSON_IsString(host) ? host->valuestring : "");
         st.listen_port = cJSON_IsNumber(port) ? (uint16_t)port->valueint : 0;
         st.listen_secs = cJSON_IsNumber(secs) && secs->valueint > 0 ? (uint32_t)secs->valueint : 0;
+        const cJSON *pre = cJSON_GetObjectItem(j, "pre_ms");
+        st.listen_pre_ms = cJSON_IsNumber(pre) && pre->valueint > 0 ? (uint32_t)pre->valueint : 0;
         st.listen_seq++;
         tal_mutex_unlock(lock);
         cJSON_Delete(j);

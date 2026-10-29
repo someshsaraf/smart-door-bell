@@ -9,7 +9,7 @@ vehicle moves in view — and lists every recording under **Events**.
 |---|---|---|
 | **Starts when** | Someone presses the bell | A person, animal or vehicle **moves** in view |
 | **Length** | 3 s before the press, then 1 s up to the ring's length after it (5 s by default) | 5 s before the movement, 55 s after it |
-| **Sound** | The doorbell's own microphone, in sync with the picture | The camera's sound |
+| **Sound** | The doorbell's own microphone, in sync with the picture | The doorbell's own microphone too, from before the movement |
 | **Shown as** | *Bell pressed* (orange) | *Motion · Person, Car* (blue) |
 | **Settings** | **Settings → Camera**: recording length, sound on or off | **Settings → Camera**: motion recording on or off |
 
@@ -17,8 +17,11 @@ vehicle moves in view — and lists every recording under **Events**.
 
 ## 🧠 Seeing people, animals and vehicles
 
-The Pi carries a **Hailo-8L** AI accelerator (Raspberry Pi AI Kit). It runs **YOLOv8s** on the camera's picture in
-about 33 ms a frame, with almost no load on the Pi's CPU, so the door can be watched all the time.
+The Pi carries a **Hailo-8L** AI accelerator — the [Raspberry Pi AI Kit](https://www.raspberrypi.com/products/ai-kit/),
+13 TOPS on an M.2 module over PCIe. It runs **YOLOv8s** (640 × 640, COCO's 80 objects) on the camera's picture in
+about **33 ms a frame**, with the detection filtering done on the chip and almost no load on the Pi's CPU, so the door
+can be watched all the time. The same chip can also run pose estimation, segmentation and face detection — those
+models come installed with Raspberry Pi's `hailo-models`.
 
 - **What counts:** people; animals (dog, cat, cow, horse, bird and others); vehicles (car, motorbike, bicycle, bus,
   truck). Everything else the model knows — plants, furniture, parcels — is ignored
@@ -58,8 +61,11 @@ thumbnail of the moment it was triggered.
 
 ### The doorbell's sound, in sync
 
-The doorbell's microphone always keeps its last 8 s of sound. On a press it streams it to the Pi from 3 s before
-the press, so the sound starts as early as the picture.
+The doorbell's microphone always keeps its last 8 s of sound, so every clip has sound from its very start:
+
+- **Ring:** on a press the doorbell streams it to the Pi from 3 s before the press
+- **Motion:** when something moves, the Pi asks the doorbell for its sound from 7 s back (the clip's 5 s plus room
+  to line it up)
 
 - **In step:** every 20 ms packet carries its sample number, and the Pi places it on its own clock. It then matches
   that sound against the camera's microphone, which is in step with the picture, to remove the camera's delay

@@ -85,6 +85,7 @@ typedef struct {
     char listen_host[16];
     uint16_t listen_port;
     uint32_t listen_secs;
+    uint32_t listen_pre_ms; /* sound from before the request, from the history */
 } net_status_t;
 
 /* Call once after tal_kv_init(); connects with the saved Wi-Fi if any. */
