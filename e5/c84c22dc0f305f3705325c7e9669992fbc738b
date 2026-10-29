@@ -1,0 +1,31 @@
+Indoor/web/app.js
+  s_fabcc01991b0ca::t_70a95039aeb9e6 482
+  s_fabcc01991b0ca::t_a2c3f1fb744e99 347
+  s_fabcc01991b0ca::t_68601d8e24402b 273,275,279-280,283,285
+  s_fabcc01991b0ca::t_f24a78bcfd1b25 258,263,265,268-272,274,276-278,281-282,284
+Indoor/web/style.css
+  s_fabcc01991b0ca::t_70a95039aeb9e6 3,19,22,67,170
+  s_fabcc01991b0ca::t_c95e438eac307e 134-136
+  s_fabcc01991b0ca::t_ab61a114b36e22 130-133
+README.md
+  s_fabcc01991b0ca::t_4268277a0b396d 3,5,17,19-21,23-29,35-45,77,83,85,87-135,137-141,144-148,150,152-160,182,184-188,190-197,200-218,222,230-238,240,242,244-249,253-255,257,260-266,268,272,274-277,279-306,310,314,316,319,321-323
+  s_fabcc01991b0ca::t_73a36fbf3fada5 198
+Indoor/web/index.html
+  s_fabcc01991b0ca::t_05594c12385e89 82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e5c84c22dc0f305f3705325c7e9669992fbc738b",
+  "prompts": {},
+  "sessions": {
+    "s_fabcc01991b0ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26aa8eec-9465-492c-a215-8b94446390ae",
+        "model": "unknown"
+      },
+      "human_author": "Somesh Saraf <somesh.saraf@telekom-digital.com>"
+    }
+  }
+}
