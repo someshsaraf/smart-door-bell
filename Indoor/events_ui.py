@@ -1,8 +1,11 @@
 """Events page of the dashboard: every ring and every movement (a person,
 animal or vehicle, watch.py), newest first, with its recording; All / Bell /
 Motion shows one kind only.
+Each card says what the visitor was doing when the description model has
+looked at it (describe.py), and "Milk delivery" on the morning's milk (daily.py).
 A tap plays the clip full screen (decoded with OpenCV, so no extra media
-packages are needed); it can be replayed or deleted. Select picks several
+packages are needed); it can be replayed, deleted, or marked as the milk
+delivery (or not). Select picks several
 events to delete; Delete all clears the list. Every delete asks for a second
 tap within CONFIRM_MS instead of a dialog."""
 import datetime as dt, time
@@ -22,8 +25,9 @@ KINDS = {"ring": "Bell pressed", "motion": "Motion"}
 
 
 def title(entry):
-    """Bell pressed / Motion · Person, Car"""
+    """Bell pressed / Motion · Person, Car / Motion · Milk delivery"""
     kind = KINDS.get(entry["kind"], entry["kind"])
+    if entry.get("milk"): return f"{kind} · Milk delivery"
     return f"{kind} · {', '.join(entry['detected'])}" if entry.get("detected") else kind
 CONFIRM_MS = 4000
 
@@ -49,7 +53,7 @@ def when(t):
 
 class Card(QPushButton):
     def __init__(self, entry):
-        super().__init__(); self.setObjectName("eventCard"); self.setFixedSize(380, 320); self.entry = entry
+        super().__init__(); self.setObjectName("eventCard"); self.setFixedSize(380, 336); self.entry = entry
         lay = QVBoxLayout(self); lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(6)
         pic = QLabel(); pic.setObjectName("eventPic"); pic.setAlignment(Qt.AlignCenter); pic.setFixedSize(360, 203)
         pm = QPixmap(str(DIR / entry["thumb"])) if entry.get("thumb") else QPixmap()
@@ -57,11 +61,13 @@ class Card(QPushButton):
         else: pic.setPixmap(pm.scaled(pic.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         lay.addWidget(pic)
         cause = "press" if entry["kind"] == "ring" else "movement"
-        lines = ((title(entry), "eventKind"), (when(entry["time"]), "eventTime"),
-                 (("▶  " + f"{entry.get('seconds', CLIP_S)} s" + (f" · from {entry['pre']:.0f} s before the {cause}" if entry.get("pre") else " recording"))
-                  if entry.get("video") else "No recording", "eventTime"))
+        length = (("▶  " + f"{entry.get('seconds', CLIP_S)} s" + (f" · from {entry['pre']:.0f} s before the {cause}" if entry.get("pre") else " recording"))
+                  if entry.get("video") else "No recording")
+        lines = ((title(entry), "eventKind"), (when(entry["time"]) + (f"  ·  {entry['seconds']} s" if entry.get("about") and entry.get("video") else ""), "eventTime"),
+                 (entry["about"] if entry.get("about") else length, "eventAbout" if entry.get("about") else "eventTime"))
         for text, obj in lines:
             l = QLabel(text); l.setObjectName(obj); l.setAlignment(Qt.AlignCenter); l.setProperty("kind", entry["kind"]); lay.addWidget(l)
+            if obj == "eventAbout": l.setWordWrap(True); l.setFixedHeight(40)
         for w in self.findChildren(QLabel): w.setAttribute(Qt.WA_TransparentForMouseEvents)
 
 
@@ -90,20 +96,33 @@ class Player(QFrame):
     """Full-screen player over the dashboard."""
     deleted = Signal(dict)
 
-    def __init__(self, parent, entry):
+    def __init__(self, parent, entry, mark_milk=None):
         super().__init__(parent); self.setObjectName("player"); self.entry = entry; self.thread = None; self.last = None; self.sound = ()
+        self.mark_milk = mark_milk
         self.setGeometry(parent.rect())
         root = QVBoxLayout(self); root.setContentsMargins(24, 20, 24, 20); root.setSpacing(12)
         head = QHBoxLayout()
-        title_ = QLabel(f"{title(entry)} · {when(entry['time'])}"); title_.setObjectName("pageTitle")
-        head.addWidget(title_); head.addStretch()
+        self.title = QLabel(); self.title.setObjectName("pageTitle")
+        head.addWidget(self.title); head.addStretch()
+        if mark_milk and (entry["kind"] == "ring" or "Person" in (entry.get("detected") or [])):
+            self.milk = QPushButton(); self.milk.setMinimumHeight(56); self.milk.setFixedWidth(250); head.addWidget(self.milk)
+            self.milk.clicked.connect(self.toggle_milk)
         for text, slot in (("↻  Replay", self.play), ("Delete", None), ("✕  Close", self.close_player)):
             b = QPushButton(text); b.setMinimumHeight(56); b.setFixedWidth(220 if slot is None else 170); head.addWidget(b)
             b.clicked.connect(slot or (lambda _=False, b=b: confirm(b, "Tap again to delete", self.delete)))
         root.addLayout(head)
+        self.about = QLabel(); self.about.setObjectName("secondary"); root.addWidget(self.about); self.show_title()
         self.view = QLabel(); self.view.setObjectName("videoView"); self.view.setAlignment(Qt.AlignCenter)
         self.view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored); root.addWidget(self.view, 1)
         self.show(); self.raise_(); self.play()
+
+    def show_title(self):
+        self.title.setText(f"{title(self.entry)} · {when(self.entry['time'])}")
+        self.about.setText(self.entry.get("about", "")); self.about.setVisible(bool(self.entry.get("about")))
+        if hasattr(self, "milk"): self.milk.setText("✕  Not the milk" if self.entry.get("milk") else "🥛  Milk delivery")
+
+    def toggle_milk(self):
+        self.mark_milk(self.entry, not self.entry.get("milk")); self.show_title()
 
     def play(self):
         self.stop()
@@ -135,8 +154,8 @@ class Player(QFrame):
 class EventsPage(QFrame):
     back = Signal()
 
-    def __init__(self, recorder):
-        super().__init__(); self.setObjectName("settings"); self.rec = recorder; self.selecting = False; self.cards = []
+    def __init__(self, recorder, mark_milk=None):
+        super().__init__(); self.setObjectName("settings"); self.rec = recorder; self.mark_milk = mark_milk; self.selecting = False; self.cards = []
         root = QVBoxLayout(self); root.setContentsMargins(24, 20, 24, 20); root.setSpacing(12)
         head = QHBoxLayout(); t = QLabel("Events"); t.setObjectName("pageTitle"); head.addWidget(t); head.addStretch()
         self.select_btn = QPushButton("Select"); self.select_btn.clicked.connect(self.toggle_select)
@@ -211,7 +230,7 @@ class EventsPage(QFrame):
         self.rec.delete_many(list(self.rec.entries)); self.selecting = False; self.refresh()
 
     def open(self, entry):
-        p = Player(self.window(), entry); p.deleted.connect(self.remove)
+        p = Player(self.window(), entry, self.mark_milk); p.deleted.connect(self.remove)
 
     def remove(self, entry):
         self.rec.delete(entry); self.refresh()

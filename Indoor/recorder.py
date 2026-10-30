@@ -123,7 +123,9 @@ class Buffer:
 
 
 class Recorder(QObject):
-    saved = Signal(dict)  # a new entry: {"time", "kind", "video", "thumb", "note", "seconds", "pre", "detected"}
+    # object, not dict: a dict signal hands receivers a copy, and they add to the entry itself (describe.py, daily.py)
+    saved = Signal(object)  # a new entry: {"time", "kind", "video", "thumb", "note", "seconds", "pre", "detected"}
+    # describe.py adds "about", "carrying", "role" and "who" (a close-up of the visitor) later; daily.py "milk"
 
     def __init__(self, url_fn, audio_fn=lambda: True, door=None):
         super().__init__(); self.lock = threading.Lock(); self.url_fn = url_fn; self.audio_fn = audio_fn; self.door = door
@@ -212,8 +214,21 @@ class Recorder(QObject):
     def stop(self):
         self.buffer.stop()
 
+    def snapshot(self, width=1280):
+        """The camera's picture of a moment ago as a JPEG (from the buffer, full quality), or None."""
+        segs = self.buffer.segments() if self.buffer.healthy() else []
+        if not segs: return None
+        r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-sseof", "-0.3", "-i", str(segs[-1][0]), "-frames:v", "1",
+                            "-vf", f"scale={width}:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "4", "-"], capture_output=True, timeout=15)
+        return r.stdout if r.returncode == 0 and r.stdout else None
+
+    def update(self, entry):
+        """`entry` (one of self.entries) was given more fields: saved with the rest."""
+        with self.lock:
+            if any(e is entry for e in self.entries): self._write()
+
     def delete(self, entry):
-        for key in ("video", "thumb"):
+        for key in ("video", "thumb", "who"):
             if entry.get(key): (DIR / entry[key]).unlink(missing_ok=True)
         with self.lock:
             self.entries = [e for e in self.entries if e is not entry and e != entry]; self._write()

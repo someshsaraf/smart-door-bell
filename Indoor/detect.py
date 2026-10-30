@@ -22,7 +22,9 @@ RATE = 10  # frames a second, at most
 KINDS = {0: ("person", "Person"),
          1: ("vehicle", "Bicycle"), 2: ("vehicle", "Car"), 3: ("vehicle", "Motorbike"), 5: ("vehicle", "Bus"), 7: ("vehicle", "Truck"),
          14: ("animal", "Bird"), 15: ("animal", "Cat"), 16: ("animal", "Dog"), 17: ("animal", "Horse"), 18: ("animal", "Sheep"),
-         19: ("animal", "Cow"), 20: ("animal", "Elephant"), 21: ("animal", "Bear"), 22: ("animal", "Zebra"), 23: ("animal", "Giraffe")}
+         19: ("animal", "Cow"), 21: ("animal", "Dog")}  # 21 is "bear": at a house door, a dog (often at night, in infrared)
+# Elephants, zebras and giraffes (20, 22, 23) are not looked for: they never come to the door, and what the
+# model takes for one is something else.
 MIN_SCORE = {"person": 0.5, "animal": 0.55, "vehicle": 0.5}
 
 
@@ -31,7 +33,7 @@ class Detector(QObject):
 
     def __init__(self):
         super().__init__()
-        self.cond = threading.Condition(); self.frame = None; self.ready = False; self.problem = ""
+        self.cond = threading.Condition(); self.frame = None; self.asks = []; self.ready = False; self.problem = ""
         threading.Thread(target=self._run, daemon=True).start()
 
     def offer(self, bgr):
@@ -39,6 +41,15 @@ class Detector(QObject):
         if not self.ready: return
         with self.cond:
             self.frame = bgr; self.cond.notify()
+
+    def ask(self, bgr, timeout=5):
+        """Looks at one frame now and returns what is in it (as found() would), for code that needs
+        the answer itself (describe.py); None without the Hailo. Goes ahead of the live frames."""
+        if not self.ready: return None
+        job = {"frame": bgr, "done": threading.Event(), "found": None}
+        with self.cond:
+            self.asks.append(job); self.cond.notify()
+        return job["found"] if job["done"].wait(timeout) else None
 
     def _run(self):
         try:
@@ -55,8 +66,11 @@ class Detector(QObject):
                     last = 0.0
                     while True:
                         with self.cond:
-                            self.cond.wait_for(lambda: self.frame is not None)
-                            frame, self.frame = self.frame, None
+                            self.cond.wait_for(lambda: self.frame is not None or self.asks)
+                            job = self.asks.pop(0) if self.asks else None
+                            if job is None: frame, self.frame = self.frame, None
+                        if job:
+                            job["found"] = self._look(pipe, info, job["frame"]); job["done"].set(); continue
                         wait = 1 / RATE - (time.monotonic() - last)
                         if wait > 0: time.sleep(wait)
                         last = time.monotonic()

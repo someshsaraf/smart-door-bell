@@ -31,3 +31,6 @@ Indoor/recordings/
 # the dashboard's Python environment (voice packages) and downloaded models
 Indoor/.venv/
 Indoor/models/
+# the dashboard's own records: milk deliveries it learnt, visitors' faces
+Indoor/milk.json
+Indoor/visitors/

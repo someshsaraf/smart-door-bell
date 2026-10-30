@@ -4,8 +4,8 @@ the alert. No account is needed; the topic name is the secret, so it is long
 and random. A self-hosted ntfy server can be set in config.json, with an access token
 when the server requires a login:
     "notify": {"server": "http://100.85.152.79:2586", "token": "tk_..."}"""
-import ipaddress, secrets, threading, urllib.request
-from urllib.parse import urlparse
+import ipaddress, secrets, threading, urllib.error, urllib.request
+from urllib.parse import urlencode, urlparse
 from PySide6.QtCore import QObject, Signal
 
 DEFAULT_SERVER = "https://ntfy.sh"
@@ -34,17 +34,28 @@ class Notifier(QObject):
         except ValueError: pass
         return "NOT encrypted (plain http)"
 
-    def send(self, title, message, tags="bell", priority="high", force=False):
-        """Posts in the background; does nothing while notifications are off (unless `force`, for the test)."""
+    def send(self, title, message, tags="bell", priority="high", force=False, image=None):
+        """Posts in the background; does nothing while notifications are off (unless `force`: the test, and the
+        alerts switched on by themselves in Settings > Alerts). `image`: JPEG bytes shown in the notification."""
         if not self.settings.get("notify_topic") or not (force or self.settings.get("notify", False)): return
-        threading.Thread(target=self._post, args=(title, message, tags, priority), daemon=True).start()
+        threading.Thread(target=self._post, args=(title, message, tags, priority, image), daemon=True).start()
 
-    def _post(self, title, message, tags, priority):
-        headers = {"Title": title, "Tags": tags, "Priority": priority}
-        if self.token: headers["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(self.topic_url(), data=message.encode("utf-8"), method="POST", headers=headers)
+    def _post(self, title, message, tags, priority, image=None):
+        if image:  # the picture is the body; the text goes in the address (headers cannot carry all of UTF-8)
+            q = urlencode({"title": title, "message": message, "tags": tags, "priority": priority, "filename": "door.jpg"})
+            req = urllib.request.Request(f"{self.topic_url()}?{q}", data=image, method="PUT", headers=self._auth())
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    if 200 <= r.status < 300: self.result.emit(True, "Sent"); return
+            except (OSError, urllib.error.HTTPError) as e:
+                print("Notification picture not accepted, sending the text alone:", e, flush=True)
+        q = urlencode({"title": title, "tags": tags, "priority": priority})
+        req = urllib.request.Request(f"{self.topic_url()}?{q}", data=message.encode("utf-8"), method="POST", headers=self._auth())
         try:
             with urllib.request.urlopen(req, timeout=10) as r: ok = 200 <= r.status < 300
             self.result.emit(ok, "Sent" if ok else f"Server answered {r.status}")
         except Exception as e:
             self.result.emit(False, f"Not sent: {e}")
+
+    def _auth(self):
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}

@@ -2,7 +2,7 @@
 outdoor unit's settings (applied over MQTT, see topics.md)."""
 import json, time
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from festivals import FESTIVALS, upcoming
 from news import CHANNELS, DEFAULT_CHANNELS, GENRES, REGIONS
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
@@ -521,6 +521,59 @@ class PhonePanel(QWidget):
         self.settings["notify_topic"] = self.new_topic(); self.save(); self.show_topic()
         self.msg.setText("New topic: subscribe to it again in the ntfy app")
 
+class AlertsPanel(QWidget):
+    """The day's summary, the milk delivery and night visitors, on the phones (daily.py), and whether
+    the visitor descriptions (describe.py) are working."""
+    SUMMARY = ((0, "Off"), (20, "8 pm"), (21, "9 pm"), (22, "10 pm"))
+    MILK = (("", "Off"), ("4:30-5:30", "4:30–5:30 am"), ("4-6", "4–6 am"), ("5-7", "5–7 am"), ("6-8", "6–8 am"))
+    NIGHT = (("", "Off"), ("1-4", "1–4 am"), ("0-5", "12–5 am"), ("23-5", "11 pm–5 am"))
+    DEFAULTS = {"summary_at": 21, "milk_window": "4:30-5:30", "night_window": "1-4"}
+
+    def __init__(self, settings, save):
+        super().__init__(); self.settings = settings; self.save = save; self.daily = self.describer = None; self.btns = {}
+        lay = QVBoxLayout(self); lay.setSpacing(10)
+        lay.addWidget(label("Alerts & summary", "sectionTitle"))
+        lay.addWidget(label("Sent to the phones subscribed in Settings › Phone (and the devices with ring alerts on), "
+                            "whether or not ring notifications are on.", "secondary", True))
+        self.choices(lay, "DAILY SUMMARY: visitors, deliveries and rings, morning to night", "summary_at", self.SUMMARY)
+        row = QHBoxLayout(); b = button("Send today's summary now", h=52); b.clicked.connect(self.send_now); row.addWidget(b); row.addStretch()
+        lay.addLayout(row)
+        self.choices(lay, "MILK DELIVERY: the milkman's walk (gate, the milk spot, gate) looked for every morning", "milk_window", self.MILK)
+        self.milk = label("", "secondary", True); lay.addWidget(self.milk)
+        self.choices(lay, "ALERT WHEN A PERSON IS AT THE DOOR AT NIGHT", "night_window", self.NIGHT)
+        lay.addWidget(label("VISITOR DESCRIPTIONS (a vision-language model on this Pi; nothing leaves it)", "section"))
+        self.model = label("", "secondary", True); lay.addWidget(self.model)
+        self.msg = label("", "secondary", True); lay.addWidget(self.msg); lay.addStretch()
+        self.timer = QTimer(self); self.timer.timeout.connect(self.show_status); self.timer.start(15000)
+
+    def choices(self, lay, title, key, options):
+        lay.addWidget(label(title, "section")); row = QHBoxLayout(); group = QButtonGroup(self); self.btns[key] = {}
+        for value, text in options:
+            b = button(text, "choice", True, 52); group.addButton(b); row.addWidget(b); self.btns[key][value] = b
+            b.clicked.connect(lambda _=False, k=key, v=value: self.set(k, v))
+        lay.addLayout(row); self.sync()
+
+    def attach(self, daily, describer):
+        self.daily = daily; self.describer = describer; daily.changed.connect(self.show_status); self.show_status()
+
+    def set(self, key, value):
+        self.settings[key] = value; self.save(); self.show_status()
+
+    def send_now(self):
+        if self.daily: self.daily.send_summary(); self.msg.setText("✓ Today's summary sent")
+
+    def show_status(self):
+        if not self.daily or not self.isVisible(): return
+        self.milk.setText(self.daily.milk_status()); self.model.setText(self.describer.status())
+
+    def sync(self):
+        for key, btns in self.btns.items():
+            b = btns.get(self.settings.get(key, self.DEFAULTS[key]))
+            if b: b.setChecked(True)
+
+    def showEvent(self, e):
+        super().showEvent(e); self.msg.setText(""); self.show_status()
+
 class FestivalPanel(QWidget):
     """Festival themes: Diwali (2 days either side), Christmas (Dec 23-27) and
     New Year (Jan 1-2) change the look of both units, and optionally the tones."""
@@ -766,20 +819,20 @@ class SettingsPage(QFrame):
         self.speaker = SpeakerPanel(bt, settings, save); self.tone = TonePanel(tones, settings, save, preview); self.outdoor = OutdoorPanel(send)
         self.news = NewsPanel(settings, save, news_changed)
         self.festivals = FestivalPanel(settings, save, self.festival_changed.emit, self.festival_preview.emit, festival_extra)
-        self.phone = PhonePanel(settings, save, notifier)
+        self.phone = PhonePanel(settings, save, notifier); self.alerts = AlertsPanel(settings, save)
         self.camera = CameraPanel(settings, save)
         self.camera.ring_seconds = lambda: self.outdoor.state.get("ring_seconds")
         self.webaccess = WebAccessPanel(settings, save); self.look = LookPanel(settings, save)
         group = QButtonGroup(self)
         for i, (text, panel) in enumerate([("Look", self.look), ("Speaker", self.speaker), ("Bell tone", self.tone), ("News", self.news),
-                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Camera", self.camera), ("Web access", self.webaccess), ("Outdoor unit", self.outdoor)]):
+                                           ("Festivals", self.festivals), ("Phone", self.phone), ("Alerts", self.alerts), ("Camera", self.camera), ("Web access", self.webaccess), ("Outdoor unit", self.outdoor)]):
             panel_frame = QFrame(); panel_frame.setObjectName("panel"); QVBoxLayout(panel_frame).addWidget(panel); self.stack.addWidget(panel_frame)
-            nb = button(text, "nav", True, 64); group.addButton(nb); nav.addWidget(nb)
+            nb = button(text, "nav", True, 58); group.addButton(nb); nav.addWidget(nb)
             nb.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i)); nb.setChecked(i == 0)
         nav.addStretch(); navw = QWidget(); navw.setLayout(nav); navw.setFixedWidth(240)
         body.addWidget(navw); body.addWidget(self.stack, 1); root.addLayout(body, 1)
 
     def sync(self):
         """A setting was changed in a browser: the buttons here show it too."""
-        for panel in (self.look, self.speaker, self.tone, self.news, self.camera, self.phone, self.festivals): panel.sync()
+        for panel in (self.look, self.speaker, self.tone, self.news, self.camera, self.phone, self.alerts, self.festivals): panel.sync()
         self.webaccess.refresh()

@@ -13,8 +13,8 @@ self.addEventListener("push", (e) => {
   if (d.type === "ring") {
     opts.requireInteraction = true;
     opts.actions = [{ action: "stop", title: "■ Stop the bell" }, { action: "open", title: "See who it is" }];
-    if (d.image) opts.image = d.image;
   }
+  if (d.image) opts.image = d.image;  // the visitor (rings, milk, night visitors)
   if (d.update) { opts.silent = true; opts.renotify = false; }  // the same ring again: no second sound
   else { opts.renotify = true; if (d.type === "ring") opts.vibrate = [300, 150, 300, 150, 600]; }
   e.waitUntil(self.registration.showNotification(d.title || "Doorbell", opts));

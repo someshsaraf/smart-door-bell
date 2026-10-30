@@ -153,6 +153,7 @@ label.field { display: block; margin-top: 12px; } label.field span { display: bl
 .event .meta { padding: 8px 10px 10px; }
 .event .meta .kind { display: block; font-size: 13px; font-weight: 700; color: #ff9f0a !important; }
 .event .meta .kind.motion { color: #64d2ff !important; }
+.event .meta .about { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text) !important; margin-top: 2px; }
 .event .meta b { display: block; font-size: 14px; } .event .meta span { color: var(--muted); font-size: 13px; }
 .event .tick { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .4);
   display: none; place-items: center; font-weight: 900; }

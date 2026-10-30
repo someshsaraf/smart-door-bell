@@ -6,7 +6,7 @@ as a tap on the wall screen, so both always agree.
 Parts:  state     ringing, countdown, mute, doorbell online, MQTT, festival
         news      stories (photo, channel, summary)   breaking   ticker headlines
         market    NIFTY / SENSEX band                  photos     slideshow pictures
-        events    recordings                           log        recent events
+        events    recordings, with what the visitor did   log        recent events
         settings  every setting with its choices      speaker    Bluetooth
         camera    camera address (never its password)  outdoor    the doorbell's own settings
 Ring alerts also go to the phones registered for push (push.py)."""
@@ -25,7 +25,7 @@ from web import secure_url
 ASYNC = object()  # an action that answers later, from a worker thread
 DEFAULTS = {"look": looks.DEFAULT, "tone": "ding_dong.wav", "intercom": False, "news_channels": DEFAULT_CHANNELS, "news_regions": ["india"],
             "news_genres": ["top"], "record_seconds": CLIP_S, "record_audio": True, "motion_record": True, "offline_alert_min": 15, "notify": False, "festival_themes": True,
-            "festival_tones": True, "home_view": "news"}
+            "festival_tones": True, "home_view": "news", "summary_at": 21, "milk_window": "4:30-5:30", "night_window": "1-4"}
 OUTDOOR_KEYS = {"theme", "bell_color", "bell_style", "glow", "chime", "chime_repeat", "volume", "ring_seconds", "screen_off"}
 
 
@@ -39,6 +39,8 @@ class WebApp(QObject):
         w.markets.updated.connect(lambda d: self.web.publish("market", {"data": d, "note": ""}))
         w.markets.status.connect(lambda note: self.web.publish("market", {"data": w.home.market, "note": note}))
         w.recorder.saved.connect(lambda _e: self.events())
+        w.describer.described.connect(lambda _e: self.events())
+        w.daily.changed.connect(lambda: (self.events(), self.settings_part()))
         w.home.logged.connect(self.on_log)
         w.bt.devices.connect(lambda devs: self.set_speaker(devices=devs))
         w.bt.output.connect(lambda name, vol: self.set_speaker(output=name, volume=vol))
@@ -88,7 +90,7 @@ class WebApp(QObject):
         self.web.publish("breaking", [{"title": i["title"], "source": i.get("source", ""), "time": i.get("time")} for i in items])
 
     def events(self):
-        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note", "audio", "detected")}
+        self.web.publish("events", [{k: e.get(k) for k in ("time", "kind", "video", "thumb", "seconds", "note", "audio", "detected", "about", "milk", "who")}
                                     for e in sorted(self.w.recorder.entries, key=lambda e: -e["time"])[:200]])
 
     def on_log(self, lines):
@@ -126,6 +128,7 @@ class WebApp(QObject):
             "upcoming": [{"name": FESTIVALS[k][0], "first": f"{a:%a %d %b}", "last": f"{b:%a %d %b %Y}"}
                          for k, a, b in upcoming(__import__("datetime").date.today(), self.w.cfg_festivals())],
             "notify": {"topic": s.get("notify_topic", ""), "server": n.server, "encryption": n.encryption()},
+            "alerts": {"milk": self.w.daily.milk_status(), "model": self.w.describer.status()},
             "web": {"addresses": [{"name": a, "url": u} for a, u in self.addresses], "secure_url": secure_url(),
                     "push": push.available(), "devices": push.listing()},
             "outdoor": {"themes": OUTDOOR_THEMES, "bells": [{"name": a, "color": c} for a, c in OUTDOOR_BELLS],
@@ -211,6 +214,10 @@ class WebApp(QObject):
             if not isinstance(value, int) or not 1 <= value <= top: return {"ok": False, "error": f"1 to {top} seconds"}
         elif key == "look":
             if value not in looks.LOOKS: return {"ok": False, "error": "no such look"}
+        elif key in ("summary_at", "milk_window", "night_window"):
+            import daily
+            if value not in {"summary_at": daily.SUMMARY_HOURS, "milk_window": daily.MILK_WINDOWS, "night_window": daily.NIGHT_WINDOWS}[key]:
+                return {"ok": False, "error": "not a choice"}
         elif key == "home_view":
             if value not in ("news", "photos"): return {"ok": False}
             self.w.home.set_view(value); return {"ok": True}  # the wall saves it itself
@@ -250,6 +257,15 @@ class WebApp(QObject):
         self.notice("Sending…")
         self.w.notifier.send("Doorbell test", "Notifications from the indoor unit work.", tags="white_check_mark",
                              priority="default", force=True)
+
+    def do_summary_now(self, _d, _r):
+        self.w.daily.send_summary(); self.notice("Today's summary sent")
+
+    def do_milk(self, d, _r):
+        """An event was (not) the milk delivery."""
+        e = next((e for e in self.w.recorder.entries if e["time"] == float(d.get("time", 0))), None)
+        if not e: return {"ok": False, "error": "no such event"}
+        self.w.daily.mark_milk(e, bool(d.get("on")))
 
     def do_notify_topic(self, _d, _r):
         from notify import new_topic

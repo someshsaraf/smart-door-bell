@@ -46,6 +46,8 @@ from recorder import Recorder, CLIP_S, PRE_S
 from door_audio import DoorAudio, LivePlayer, PORT as LISTEN_PORT
 from detect import Detector
 from watch import Watcher
+from describe import Describer
+from daily import Daily
 from events_ui import EventsPage
 from assistant import Assistant
 
@@ -195,7 +197,16 @@ class Window(QWidget):
         # the dashboard in a browser (Settings > Web access); actions come back here like taps
         self.web=Web(recorder_mod.DIR, lambda: camera_cfg.url(which="sub") or camera_cfg.url(), self.door_audio)
         self.door_online=None
-        self.events_page=EventsPage(self.recorder)
+        # one line about each visitor (a vision-language model on this Pi), the day's summary, milk, night visitors
+        self.describer=Describer(self.recorder, self.detector, CFG.get("describe",{}).get("url"))
+        self.daily=Daily(SETTINGS, save_settings, self.recorder, self.describer, self.detector,
+                         lambda title, text, tags, priority, image: self.alert_phones(title, text, tags, priority, image, True, tags),
+                         self.home.add_event)
+        self.settings.alerts.attach(self.daily, self.describer)
+        self.watcher.moved.connect(self.daily.on_motion)
+        self.events_page=EventsPage(self.recorder, self.daily.mark_milk)
+        for sig in (self.describer.described, self.daily.changed):
+            sig.connect(lambda *_: self.events_page.isVisible() and self.events_page.refresh())
         self.recorder.saved.connect(lambda _e: self.show_visits()); self.show_visits()
         self.settings.camera.on_saved=self.recorder.buffer.restart  # new camera details: rebuffer from it
         self.settings.camera.on_audio=self.recorder.buffer.restart  # sound in recordings switched on or off
@@ -398,12 +409,15 @@ class Window(QWidget):
         heard="has not been heard from" if self.door_online is None else "has been offline"
         self.alert_phones("Doorbell offline", f"The doorbell {heard} since {since}: rings will not reach you. "
                           "Check its power and Wi-Fi.", "warning", "high")
-    def alert_phones(self, title, text, tags, priority):
-        """ntfy (Settings > Phone) and the browsers registered for ring alerts."""
-        self.notifier.send(title, text, tags=tags, priority=priority)
+    def alert_phones(self, title, text, tags, priority, image=None, force=False, tag="health"):
+        """ntfy (Settings > Phone; `force`: also while ring notifications are off) and the browsers registered
+        for ring alerts, where a later alert with the same `tag` replaces it. `image`: JPEG bytes of the visitor.
+        May be called from any thread."""
+        self.notifier.send(title, text, tags=tags, priority=priority, force=force, image=image)
         import push
-        push.send({"type": "health", "tag": "doorbell-health", "title": title, "body": text, "time": time.time()},
-                  self.webapp.sub_claim(), ttl=6*3600, urgency="high" if priority=="high" else "normal")
+        snap=f"/api/snap/{self.web.add_snap(image)}.jpg" if image and self.web.server else ""
+        push.send({"type": "health", "tag": "doorbell-"+tag, "title": title, "body": text, "image": snap, "time": time.time()},
+                  self.webapp.sub_claim(), ttl=6*3600, urgency="high" if priority in ("high", "urgent") else "normal")
         print(f"Phones alerted: {title}", flush=True)
     # ---------- the doorbell's microphone ----------
     def want_listen(self, seconds):
@@ -567,6 +581,7 @@ STYLE = Template("""
     QLabel#eventKind {font-size:17px;font-weight:700;background:transparent;color:#ff9f0a;}
     QLabel#eventKind[kind="motion"] {color:#64d2ff;}
     QLabel#eventTime {font-size:14px;color:$muted;background:transparent;}
+    QLabel#eventAbout {font-size:14px;color:$text;background:transparent;}
     QFrame#player {background:$bg;}
     QLabel#webUrl {font-size:24px;font-weight:700;color:$count;}
     QLabel#camValue {font-size:22px;font-weight:600;}

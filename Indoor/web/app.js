@@ -320,7 +320,8 @@ document.addEventListener("visibilitychange", () => {  // no camera stream in th
 // ---------- recordings ----------
 let evFilter = "all", evKind = "all", selecting = false, selected = new Set(), current = null;
 // Bell pressed / Motion · Person, Car
-const evTitle = (e) => (e.kind === "motion" ? "Motion" : "Bell pressed") + (e.detected && e.detected.length ? " · " + e.detected.join(", ") : "");
+const evTitle = (e) => (e.kind === "motion" ? "Motion" : "Bell pressed") + (e.milk ? " · Milk delivery" : e.detected && e.detected.length ? " · " + e.detected.join(", ") : "");
+const isVisitor = (e) => e.kind === "ring" || (e.detected || []).includes("Person");
 function when(t) {
   const d = new Date(t * 1000), today = new Date(), y = new Date(Date.now() - 86400000);
   const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -344,7 +345,7 @@ function renderEvents() {
   if (!list.length) { box.innerHTML = `<p class="muted">No ${evKind === "ring" ? "bell presses" : evKind === "motion" ? "movements" : "events"} here.</p>`; return; }
   box.innerHTML = list.map((e) => `<button class="event${selected.has(e.time) ? " sel" : ""}" data-t="${e.time}">
     <div class="thumb" ${e.thumb ? `style="background-image:url('/media/${encodeURI(e.thumb)}')"` : ""}>${e.thumb ? "" : esc(e.note || "No recording")}</div>
-    <div class="meta"><span class="kind${e.kind === "motion" ? " motion" : ""}">${esc(evTitle(e))}</span><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span></div><span class="tick">✓</span></button>`).join("");
+    <div class="meta"><span class="kind${e.kind === "motion" ? " motion" : ""}">${esc(evTitle(e))}</span><b>${when(e.time)}</b><span>${e.video ? `▶ ${e.seconds} s` : "No recording"}</span>${e.about ? `<span class="about">${esc(e.about)}</span>` : ""}</div><span class="tick">✓</span></button>`).join("");
 }
 $("events").addEventListener("click", (e) => {
   const b = e.target.closest("[data-t]"); if (!b) return;
@@ -360,12 +361,23 @@ $("ev-delete").onclick = async () => {
   await act("delete", { times }); selecting = false; selected.clear(); renderEvents();
 };
 function openEvent(e) {
-  current = e; $("player-title").textContent = evTitle(e); $("player-sub").textContent = when(e.time);
+  current = e; showPlayerTitle();
   const v = $("video");
   if (e.video) { v.classList.remove("hidden"); v.src = "/media/" + encodeURI(e.video); } else { v.classList.add("hidden"); v.removeAttribute("src"); }
   $("player-note").textContent = e.video ? "" : e.note || "No recording";
   $("player").showModal();
 }
+function showPlayerTitle() {
+  const e = current; $("player-title").textContent = evTitle(e);
+  $("player-sub").textContent = when(e.time) + (e.about ? " · " + e.about : "");
+  $("player-milk").classList.toggle("hidden", !isVisitor(e));
+  $("player-milk").textContent = e.milk ? "✕ Not the milk" : "🥛 Milk delivery";
+}
+$("player-milk").onclick = async () => {
+  if (!current) return;
+  const r = await act("milk", { time: current.time, on: !current.milk });
+  if (!r || r.ok !== false) { current.milk = !current.milk; showPlayerTitle(); }
+};
 $("player-close").onclick = () => $("player").close();
 $("player").addEventListener("close", () => $("video").pause());
 $("player-delete").onclick = async () => {
@@ -435,9 +447,9 @@ async function alertsTest() {
 
 // ---------- settings ----------
 const SECTIONS = [["look", "Look"], ["speaker", "Speaker"], ["tone", "Bell tone"], ["news", "News"], ["festivals", "Festivals"],
-  ["phone", "Phone (ntfy)"], ["camera", "Camera"], ["web", "Web access & alerts"], ["outdoor", "Outdoor unit"]];
+  ["phone", "Phone (ntfy)"], ["alerts", "Alerts & summary"], ["camera", "Camera"], ["web", "Web access & alerts"], ["outdoor", "Outdoor unit"]];
 const DEPENDS = { look: ["settings"], speaker: ["speaker", "settings"], tone: ["settings"], news: ["settings"], festivals: ["settings", "state"],
-  phone: ["settings"], camera: ["camera", "settings", "outdoor"], web: ["settings"], outdoor: ["outdoor", "settings"] };
+  phone: ["settings"], alerts: ["settings"], camera: ["camera", "settings", "outdoor"], web: ["settings"], outdoor: ["outdoor", "settings"] };
 let section = "look", camDirty = false, odTab = "look", pickedMac = null, pickedNet = null, previewAudio = null;
 const vals = () => ((P.settings || {}).values || {});
 // [seconds recorded after a press, the most allowed: the doorbell's ring length]
@@ -543,6 +555,18 @@ const RENDER = {
       <p class="muted" style="margin-top:8px">Sent here and to the devices with ring alerts on (Web access & alerts), and again when it is back.</p>
       <div class="row" style="margin-top:14px"><button data-act="notify_test">Send a test notification</button>
         <button data-act="notify_topic" data-confirm="A new topic stops alerts on every phone subscribed to the old one. Continue?">New topic</button></div>`;
+  },
+  alerts() {
+    const a = P.settings.alerts;
+    return `<h2>Alerts & summary</h2><p class="muted">Sent to the ntfy topic (Settings › Phone) and the devices with ring alerts on,
+        whether or not ring notifications are on.</p>
+      ${choices("DAILY SUMMARY: visitors, deliveries and rings, morning to night", "summary_at", [[0, "Off"], [20, "8 pm"], [21, "9 pm"], [22, "10 pm"]])}
+      <div class="row" style="margin-top:10px"><button data-act="summary_now">Send today's summary now</button></div>
+      ${choices("MILK DELIVERY: the milkman's walk (gate, the milk spot, gate) looked for every morning", "milk_window",
+        [["", "Off"], ["4:30-5:30", "4:30–5:30 am"], ["4-6", "4–6 am"], ["5-7", "5–7 am"], ["6-8", "6–8 am"]])}
+      <p class="muted">${esc(a.milk)}. A wrong call is put right in Events: open the clip, then 🥛 Milk delivery / Not the milk (this also teaches where the milk is left).</p>
+      ${choices("ALERT WHEN A PERSON IS AT THE DOOR AT NIGHT", "night_window", [["", "Off"], ["1-4", "1–4 am"], ["0-5", "12–5 am"], ["23-5", "11 pm–5 am"]])}
+      <h3 class="section">VISITOR DESCRIPTIONS (a vision-language model on the Pi; nothing leaves it)</h3><p class="muted">${esc(a.model)}</p>`;
   },
   camera() {
     const c = P.camera || {};
