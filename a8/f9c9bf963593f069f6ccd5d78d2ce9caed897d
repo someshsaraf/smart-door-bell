@@ -1,0 +1,55 @@
+Indoor/app.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 49-50,200-209,412-416,418-420,584
+Indoor/weather.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-56
+Indoor/web/index.html
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 148-149
+Indoor/notify.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 7-8,37-39,41-53,59-61
+Indoor/daily.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-350
+Indoor/recorder.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 126-128,217-229,231
+Indoor/events_ui.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 4-5,7-8,28,30,56,64-67,70,99,101,105-109,114,119-126,157-158,233
+Indoor/web/sw.js
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 17
+Indoor/describe.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-196
+Indoor/web/app.js
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 323-324,348,364,370-380,450,452,559-569
+  s_fabcc01991b0ca::t_ace6747360bfb1 570
+Indoor/visitors.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-260
+Indoor/detect.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 25-27,36,45-53,69-73
+Indoor/web/style.css
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 156
+.gitignore
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 34-36
+Indoor/setup_vlm.sh
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-39
+Indoor/settings_ui.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 5,524-576,822,828,830,837
+Indoor/webapp.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 9,28,42-43,93,131,217-220,261-268
+  s_fabcc01991b0ca::t_252d05fb7e01f1 269
+Indoor/visitors_ui.py
+  s_fabcc01991b0ca::t_64f8dd5631e7a6 1-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a8f9c9bf963593f069f6ccd5d78d2ce9caed897d",
+  "prompts": {},
+  "sessions": {
+    "s_fabcc01991b0ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26aa8eec-9465-492c-a215-8b94446390ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Somesh Saraf <somesh.saraf@telekom-digital.com>"
+    }
+  }
+}
